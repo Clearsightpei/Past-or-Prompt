@@ -30,7 +30,6 @@ export default function RenameFolderDialog({
   const [folderName, setFolderName] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [password, setPassword] = useState("");
-  const [showPasswordInput, setShowPasswordInput] = useState(false);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -114,22 +113,18 @@ export default function RenameFolderDialog({
               onChange={(e) => setFolderName(e.target.value)}
               className="bg-[#1a3c42] text-[#00ffe0] border-[#00ffe0]"
             />
-            {showPasswordInput && (
-              <>
-                <Label
-                  htmlFor="password"
-                  className="text-[#00ffe0]"
-                >
-                  Password
-                </Label>
-                <Input
-                  id="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="bg-[#1a3c42] text-[#00ffe0] border-[#00ffe0]"
-                />
-              </>
-            )}
+            <Label
+              htmlFor="password"
+              className="text-[#00ffe0]"
+            >
+              Password (optional)
+            </Label>
+            <Input
+              id="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="bg-[#1a3c42] text-[#00ffe0] border-[#00ffe0]"
+            />
           </div>
           <DialogFooter>
             <Button type="submit" disabled={isSubmitting}>
