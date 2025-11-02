@@ -191,15 +191,47 @@ export default function AddStory() {
                   <Label htmlFor="true_version" className="block text-sm font-medium text-[#00ffe0]">
                     True Version
                   </Label>
-                  <div className="mt-1">
+                  <div className="mt-1 flex gap-3">
                     <Textarea
                       id="true_version"
                       name="true_version"
                       value={formData.true_version}
                       onChange={handleChange}
                       placeholder="The historically accurate account"
-                      className="bg-[#1a3c42] text-[#00ffe0] border-[#00ffe0]"
+                      className="bg-[#1a3c42] text-[#00ffe0] border-[#00ffe0] flex-1"
                     />
+                    <div className="shrink-0">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={async () => {
+                          if (!formData.true_version.trim()) {
+                            toast({ title: 'Error', description: 'Please enter a True Version first', variant: 'destructive' });
+                            return;
+                          }
+
+                          try {
+                            setIsSubmitting(true);
+                            const res = await apiRequest('POST', '/api/ollama/generate', { true_version: formData.true_version });
+                            const json = await res.json();
+                            if (json?.hallucinated) {
+                              setFormData(prev => ({ ...prev, fake_version: json.hallucinated }));
+                              toast({ title: 'Generated', description: 'Fake version generated and filled.', });
+                            } else {
+                              toast({ title: 'No result', description: 'No hallucinated content returned', variant: 'destructive' });
+                            }
+                          } catch (err) {
+                            console.error('Failed to generate hallucinated version', err);
+                            toast({ title: 'Error', description: 'Failed to generate fake version', variant: 'destructive' });
+                          } finally {
+                            setIsSubmitting(false);
+                          }
+                        }}
+                        disabled={isSubmitting}
+                      >
+                        {isSubmitting ? 'Generating...' : 'Generate hallucination'}
+                      </Button>
+                    </div>
                   </div>
                   {errors.true_version ? (
                     <p className="mt-1 text-xs text-error">{errors.true_version}</p>

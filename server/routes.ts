@@ -154,6 +154,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // POST /api/folders/:folderId/stories - Create a new story in a folder
   app.post("/api/folders/:folderId/stories", async (req, res) => {
     try {
+      console.log("[DEBUG] Incoming story data:", req.body);
       const folderId = parseInt(req.params.folderId);
       if (isNaN(folderId)) {
         return res.status(400).json({ message: "Invalid folder ID" });
@@ -170,12 +171,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const validatedData = insertStorySchema.parse(storyData);
       
       const story = await storage.createStory(validatedData);
-      res.status(201).json(story);
+  res.status(201).json(story);
     } catch (error) {
       if (error instanceof z.ZodError) {
         return res.status(400).json({ message: "Invalid story data", errors: error.errors });
       }
-      res.status(500).json({ message: "Failed to create story" });
+      const errMsg = error instanceof Error ? error.message : String(error);
+      console.error("[ERROR] Failed to create story:", error);
+      res.status(500).json({ message: "Failed to create story", error: errMsg });
     }
   });
 
@@ -213,6 +216,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // DELETE /api/stories/:id - Delete a story
   app.delete("/api/stories/:id", async (req, res) => {
     try {
+      console.log(`[DEBUG] Attempting to delete story with id: ${req.params.id}`);
       const id = parseInt(req.params.id);
       if (isNaN(id)) {
         return res.status(400).json({ message: "Invalid story ID" });
@@ -220,12 +224,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       const success = await storage.deleteStory(id);
       if (!success) {
+        console.error(`[ERROR] Story with id ${id} not found or could not be deleted.`);
         return res.status(404).json({ message: "Story not found" });
       }
-      
       res.status(204).send();
     } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
       res.status(500).json({ message: "Failed to delete story" });
+  console.error(`[ERROR] Failed to delete story with id ${req.params.id}:`, error);
+  res.status(500).json({ message: "Failed to delete story", error: errMsg });
     }
   });
   // POST /api/attempt - Record a user attempt
@@ -293,6 +300,60 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json(stats);
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch story statistics" });
+    }
+  });
+
+  // POST /api/ollama/generate - Generate a hallucinated/fake version using Ollama Cloud
+  app.post('/api/ollama/generate', async (req, res) => {
+    try {
+      const { true_version, model } = req.body || {};
+
+      if (!true_version || typeof true_version !== 'string') {
+        return res.status(400).json({ message: 'true_version is required in the request body' });
+      }
+
+      const apiKey = process.env.OLLAMA_API_KEY;
+      if (!apiKey) {
+        return res.status(500).json({ message: 'Ollama API key not configured on server' });
+      }
+
+  // Build prompt to ask Ollama to generate a creative, reimagined story based on the true_version
+  const prompt = `Take the following story and write a new, creative story based on it. Keep the overall structure the same, for example the main role or occupation stays the same. Change all the details, characters, events, and settings so it is entirely different, but the story should be roughly the same length. Do not use em dashes. Focus on imaginative storytelling while remaining plausible.\n\n${true_version}`;
+
+      const payload = {
+        model: model || process.env.OLLAMA_MODEL || 'gpt-oss:120b',
+        messages: [
+          { role: 'user', content: prompt }
+        ],
+        stream: false
+      };
+
+      const response = await fetch('https://ollama.com/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const body = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        return res.status(response.status).json({ message: 'Ollama API error', body });
+      }
+
+      // Try to extract returned content in common shapes
+      const content = body?.message?.content || body?.choices?.[0]?.message?.content || body?.choices?.[0]?.text || body?.output || null;
+
+      if (!content) {
+        return res.status(200).json({ hallucinated: String(body) });
+      }
+
+      return res.status(200).json({ hallucinated: content });
+    } catch (err: any) {
+      console.error('[ERROR] Ollama generate error:', err);
+      return res.status(500).json({ message: 'Failed to call Ollama', error: err?.message || String(err) });
     }
   });
 
