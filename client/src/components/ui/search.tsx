@@ -30,7 +30,7 @@ export function Search({ placeholder = "Search...", value, onChange, className =
         placeholder={placeholder}
         value={searchValue}
         onChange={handleChange}
-        className="pr-10 bg-[#00ffe0] text-black placeholder:text-black/60 border-none focus:ring-2 focus:ring-[#00ffe0] focus:border-[#00ffe0]"
+        className="pr-10 bg-[#00ffe0] text-black !text-black placeholder:!text-black border-none focus:ring-2 focus:ring-[#00ffe0] focus:border-[#00ffe0]"
       />
       <div className="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
         <svg className="h-5 w-5 text-neutral-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">

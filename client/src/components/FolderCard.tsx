@@ -26,7 +26,7 @@ export default function FolderCard({ folder, onEdit, onDelete, onViewStories }: 
         <p className="mt-2 text-sm text-[#00ffe0]">
           {folder.id === 1 
             ? "Contains all stories from all folders" 
-            : "Collection of historical true or false stories"}
+            : "Used to organize your true/false story collections."}
         </p>
       </CardContent>
       <CardFooter className="border-t border-[#00ffe0] bg-[#1a3c42] px-5 py-3">
