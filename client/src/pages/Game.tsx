@@ -210,7 +210,10 @@ export default function Game() {
       <PageGradientBackground>
         {/* Main game content (white card, story boxes, controls, etc.) */}
         <div className="mb-6 flex flex-col sm:flex-row items-start sm:items-center justify-between">
-          <h1 className="text-2xl font-bold text-neutral-800">Spot the Truth: Can You Tell AI from Human? </h1>
+          <div>
+            <h1 className="text-2xl font-bold text-neutral-800">Spot the Truth: Can You Tell AI from Human? </h1>
+            <p className="text-xs text-[#00ffe0] mt-1">Most humans claim that they can tell human text from AI. Can you?</p>
+          </div>
           
           <div className="mt-4 sm:mt-0 flex flex-col sm:flex-row items-start sm:items-center space-y-2 sm:space-y-0 sm:space-x-4">
             {/* Folder Selector */}

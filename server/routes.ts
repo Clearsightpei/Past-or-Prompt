@@ -318,8 +318,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
   // Build prompt to ask Ollama to generate a creative, reimagined story based on the true_version
-  const prompt = `Take the following story and write a new, creative story based on it. Keep the overall structure the same, for example the main role or occupation stays the same. Change all the details, characters, events, and settings so it is entirely different, but the story should be roughly the same length. Do not use em dashes. Focus on imaginative storytelling while remaining plausible.\n\n${true_version}`;
+  const prompt = `
+Write a new, original text that matches the *writing style, tone, and voice* of the following source text.
 
+Requirements:
+- Do NOT copy phrases, sentences, or specific events from the source.
+- Do NOT preserve characters, settings, or plot details.
+- Match the source’s writing style closely (syntax, rhythm, diction, level of formality, narrative distance).
+- Match the overall tone and mood.
+- Keep the length approximately the same.
+- The content may differ entirely, but it should feel as if written by the same author.
+- Do not use em dashes.
+
+Source text:
+${true_version}
+`;
       const payload = {
         model: model || process.env.OLLAMA_MODEL || 'gpt-oss:120b',
         messages: [

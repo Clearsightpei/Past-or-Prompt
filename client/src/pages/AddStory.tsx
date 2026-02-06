@@ -229,8 +229,11 @@ export default function AddStory() {
                         }}
                         disabled={isSubmitting}
                       >
-                        {isSubmitting ? 'Generating...' : 'Generate hallucination'}
+                        {isSubmitting ? 'Generating...' : 'Generate Fake Version'}
                       </Button>
+                      <div className="mt-2 p-2 bg-[#0e2c30] text-xs text-[#00ffe0] rounded max-w-xs">
+                        Creates a new fake story that matches the tone and writing style of the true version, but with different content.
+                      </div>
                     </div>
                   </div>
                   {errors.true_version ? (
