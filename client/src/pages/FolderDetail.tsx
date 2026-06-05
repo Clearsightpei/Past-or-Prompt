@@ -1,270 +1,346 @@
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { queryClient } from "@/lib/queryClient";
-import { useParams, useLocation } from "wouter";
-import { Plus, Pencil, Trash2 } from "lucide-react";
+import { useParams, useLocation, Link } from "wouter";
+import { Story } from "@shared/schema";
+import { ArrowLeft, PenLine, Lock, Sparkles, Pencil, Trash2, Settings } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest } from "@/lib/queryClient";
-import DeleteConfirmDialog from "@/components/DeleteConfirmDialog";
-import RenameFolderDialog from "@/components/RenameFolderDialog";
-import { Story, Folder } from "@shared/schema";
-import PageGradientBackground from "@/components/PageGradientBackground";
+import { queryClient, apiRequest } from "@/lib/queryClient";
+import { useFolder } from "@/hooks/useFolders";
+import { useConfirm } from "@/hooks/useConfirm";
 
+// Collection view: read the stories, unlock if private, and (with access) edit
+// or delete stories. The game always reveals everything regardless of lock.
 export default function FolderDetail() {
   const { id } = useParams<{ id: string }>();
   const [, navigate] = useLocation();
   const { toast } = useToast();
   const folderId = parseInt(id);
-  
-  const [isDeleteStoryOpen, setIsDeleteStoryOpen] = useState(false);
-  const [selectedStory, setSelectedStory] = useState<Story | null>(null);
-  const [isRenameFolderOpen, setIsRenameFolderOpen] = useState(false);
-  const [isDeleteFolderOpen, setIsDeleteFolderOpen] = useState(false);
-  
-  // Redirect if invalid ID
+  const { confirm, dialog } = useConfirm();
+
+  const [password, setPassword] = useState("");
+
+  // Manage-collection dialog state
+  const [editOpen, setEditOpen] = useState(false);
+  const [editName, setEditName] = useState("");
+  const [editVisibility, setEditVisibility] = useState<"public" | "private">("public");
+  const [editPassword, setEditPassword] = useState("");
+  const [editRemovePassword, setEditRemovePassword] = useState(false);
+
   useEffect(() => {
-    if (isNaN(folderId)) {
-      navigate("/folders");
-    }
+    if (isNaN(folderId)) navigate("/collections");
   }, [folderId, navigate]);
-  
-  // Fetch folder details
-  const { data: folder, isLoading: isLoadingFolder } = useQuery({
-    queryKey: [`/api/folders/${folderId}`],
-    queryFn: async () => {
-      const response = await fetch(`/api/folders/${folderId}`);
-      if (!response.ok) throw new Error('Failed to fetch folder');
-      return response.json() as Promise<Folder>;
-    }
-  });
-  
-  // Fetch stories for this folder
-  const { data: stories = [], isLoading: isLoadingStories, refetch: refetchStories } = useQuery({
+
+  const { data: folder, isLoading: isLoadingFolder } = useFolder(folderId);
+
+  const { data: stories = [], isLoading: isLoadingStories } = useQuery({
     queryKey: [`/api/stories`, { folder: folderId }],
     queryFn: async () => {
-      const response = await fetch(`/api/stories?folder=${folderId}`);
+      const response = await fetch(`/api/stories?folder=${folderId}`, { credentials: "include" });
       if (!response.ok) throw new Error('Failed to fetch stories');
       return response.json() as Promise<Story[]>;
-    }
+    },
+    enabled: !isNaN(folderId) && !!folder?.can_view,
   });
-  
-  // Delete story mutation
-  const deleteStoryMutation = useMutation({
+
+  const unlockMutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest("POST", `/api/collections/${folderId}/unlock`, { password });
+    },
+    onSuccess: () => {
+      setPassword("");
+      queryClient.invalidateQueries({ queryKey: [`/api/folders/${folderId}`] });
+      queryClient.invalidateQueries({ queryKey: ['/api/stories'] });
+    },
+    onError: () => toast({ title: "Incorrect password", variant: "destructive" }),
+  });
+
+  const deleteMutation = useMutation({
     mutationFn: async (storyId: number) => {
       await apiRequest("DELETE", `/api/stories/${storyId}`);
     },
     onSuccess: () => {
-      toast({
-        title: "Success",
-        description: "Story deleted successfully",
-      });
       queryClient.invalidateQueries({ queryKey: ['/api/stories'] });
+      toast({ title: "Story deleted" });
     },
-    onError: () => {
-      toast({
-        title: "Error",
-        description: "Failed to delete story",
-        variant: "destructive"
-      });
-    }
+    onError: () => toast({ title: "Couldn't delete", variant: "destructive" }),
   });
-  
-  // Delete folder mutation
-  const deleteFolderMutation = useMutation({
-    mutationFn: async (folderId: number) => {
+
+  const deleteCollectionMutation = useMutation({
+    mutationFn: async () => {
       await apiRequest("DELETE", `/api/folders/${folderId}`);
     },
     onSuccess: () => {
-      toast({
-        title: "Success",
-        description: "Folder deleted successfully",
-      });
-      navigate("/folders");
+      queryClient.invalidateQueries({ queryKey: ['/api/folders'] });
+      toast({ title: "Collection deleted" });
+      navigate("/collections");
     },
-    onError: () => {
-      toast({
-        title: "Error",
-        description: "Failed to delete folder",
-        variant: "destructive"
-      });
-    }
+    onError: () => toast({ title: "Couldn't delete collection", variant: "destructive" }),
   });
-  
-  // Handle story deletion
-  const handleDeleteStory = async () => {
-    if (!selectedStory) return;
-    
-    try {
-      await deleteStoryMutation.mutateAsync(selectedStory.id);
-      setIsDeleteStoryOpen(false);
-      setSelectedStory(null);
-    } catch (error) {
-      console.error("Failed to delete story:", error);
-    }
-  };
-  
-  // Handle folder deletion
-  const handleDeleteFolder = async () => {
+
+  const openEdit = () => {
     if (!folder) return;
-    
-    try {
-      await deleteFolderMutation.mutateAsync(folder.id);
-    } catch (error) {
-      console.error("Failed to delete folder:", error);
-    }
+    setEditName(folder.name);
+    setEditVisibility(folder.visibility === "private" ? "private" : "public");
+    setEditPassword("");
+    setEditRemovePassword(false);
+    setEditOpen(true);
   };
-  
-  // Open story delete confirmation
-  const handleOpenDeleteStory = (story: Story) => {
-    setSelectedStory(story);
-    setIsDeleteStoryOpen(true);
-  };
-  
-  // Handle add story button
-  const handleAddStory = () => {
-    navigate(`/folders/${folderId}/add-story`);
-  };
-  
-  // Handle edit story button
-  const handleEditStory = (storyId: number) => {
-    navigate(`/folders/${folderId}/stories/${storyId}/edit`);
-  };
-  
-  // Handle rename folder success
-  const handleFolderRenamed = () => {
-    queryClient.invalidateQueries({ queryKey: [`/api/folders/${folderId}`] });
-  };
-  
-  if (isNaN(folderId)) {
-    return null; // Redirect will happen in useEffect
+
+  const updateCollectionMutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest("PUT", `/api/folders/${folderId}`, {
+        name: editName.trim(),
+        visibility: editVisibility,
+        password: editPassword.trim() || undefined,
+        removePassword: editRemovePassword || undefined,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [`/api/folders/${folderId}`] });
+      queryClient.invalidateQueries({ queryKey: ['/api/folders'] });
+      toast({ title: "Collection updated" });
+      setEditOpen(false);
+    },
+    onError: () => toast({ title: "Couldn't update", description: "Private collections need a password.", variant: "destructive" }),
+  });
+
+  // Going private requires a password to exist (current or newly entered).
+  const editValid =
+    editName.trim().length > 0 &&
+    (editVisibility === "public" ||
+      (folder?.has_password && !editRemovePassword) ||
+      editPassword.trim().length > 0);
+
+  if (isNaN(folderId)) return null;
+
+  if (isLoadingFolder) {
+    return <p className="text-center text-stone-500 py-12">Loading...</p>;
   }
-  
-  if (isLoadingFolder || isLoadingStories) {
-    return (
-      <div className="flex justify-center items-center h-64">
-        <p>Loading...</p>
-      </div>
-    );
-  }
-  
+
   if (!folder) {
     return (
-      <div className="text-center py-8">
-        <h2 className="text-xl font-semibold mb-4">Folder not found</h2>
-        <Button onClick={() => navigate("/folders")}>Back to Folders</Button>
+      <div className="text-center py-16">
+        <p className="text-stone-600 mb-4">Collection not found.</p>
+        <Link href="/collections" className="text-stone-900 underline underline-offset-4">All collections</Link>
       </div>
     );
   }
-  
-  const isGeneral = folder.id === 1;
-  
-  return (
-    <PageGradientBackground>
-      <div>
-        <div className="flex items-center justify-between mb-6">
-          <h2 className="text-xl font-semibold text-neutral-800">{folder.name}</h2>
-          <div className="flex space-x-3">
-            <Button variant="outline" onClick={() => navigate("/folders")}>Go Back to Folder Menu</Button>
-            <Button onClick={handleAddStory}>
-              <Plus className="mr-2 h-5 w-5" />
-              Add Story
-            </Button>
-            <Button variant="outline" onClick={() => setIsRenameFolderOpen(true)}>
-              <Pencil className="mr-2 h-5 w-5" />
-              Rename Folder
-            </Button>
-            {!isGeneral && (
-              <Button variant="outline" onClick={() => setIsDeleteFolderOpen(true)}>
-                <Trash2 className="mr-2 h-5 w-5 text-error" />
-                Delete Folder
-              </Button>
-            )}
-          </div>
-        </div>
 
-        {/* Story List */}
-        {stories.length === 0 ? (
-          <div className="text-center py-8">
-            <h3 className="text-lg font-semibold mb-4">No stories found</h3>
-            <p className="text-neutral-600 mb-6">Add a story to get started</p>
-            <Button onClick={handleAddStory}>
-              <Plus className="mr-2 h-5 w-5" />
-              Add Story
+  // Private + locked → show the unlock gate (the game can still reveal it).
+  if (!folder.can_view) {
+    return (
+      <div className="max-w-md mx-auto">
+        <Link href="/collections" className="inline-flex items-center gap-2 text-sm text-stone-500 hover:text-stone-800 mb-8">
+          <ArrowLeft className="h-4 w-4" />
+          All collections
+        </Link>
+        <div className="rounded-lg border border-stone-200 bg-white p-8 text-center">
+          <Lock className="h-8 w-8 text-stone-400 mx-auto mb-4" />
+          <h1 className="font-serif text-2xl font-bold text-stone-900 mb-1">{folder.name}</h1>
+          <p className="text-stone-500 mb-6">This collection is private. Enter the password to read inside.</p>
+          <form
+            onSubmit={(e) => { e.preventDefault(); if (password.trim()) unlockMutation.mutate(); }}
+            className="space-y-3"
+          >
+            <Input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Password"
+              autoFocus
+            />
+            <Button type="submit" className="w-full" disabled={!password.trim() || unlockMutation.isPending}>
+              {unlockMutation.isPending ? "Unlocking..." : "Unlock"}
             </Button>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {stories.map((story) => (
-              <Card key={story.id} className="bg-[#1a3c42] shadow rounded-lg overflow-hidden">
-                <CardContent className="p-6">
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <h3 className="text-lg font-medium text-[#00ffe0]">{story.event}</h3>
-                      <p className="mt-1 text-sm text-[#00ffe0] line-clamp-2">{story.introduction}</p>
-                    </div>
-                    <div className="ml-4 flex-shrink-0 flex">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="mr-2 h-8"
-                        onClick={() => handleEditStory(story.id)}
-                      >
-                        <Pencil className="mr-1.5 h-4 w-4" />
-                        Edit
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-8"
-                        onClick={() => handleOpenDeleteStory(story)}
-                      >
-                        <Trash2 className="mr-1.5 h-4 w-4 text-error" />
-                        Delete
-                      </Button>
-                    </div>
-                  </div>
-                  <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div className="border border-[#00ffe0] rounded-md p-3 bg-[#1a3c42]">
-                      <p className="text-xs font-medium text-[#00ffe0] mb-1">True Version:</p>
-                      <p className="text-sm text-[#00ffe0] line-clamp-3">{story.true_version}</p>
-                    </div>
-                    <div className="border border-[#00ffe0] rounded-md p-3 bg-[#1a3c42]">
-                      <p className="text-xs font-medium text-[#00ffe0] mb-1">Fake Version:</p>
-                      <p className="text-sm text-[#00ffe0] line-clamp-3">{story.fake_version}</p>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        )}
-        
-        {/* Dialogs */}
-        <DeleteConfirmDialog 
-          open={isDeleteStoryOpen}
-          onOpenChange={setIsDeleteStoryOpen}
-          title="Delete Story"
-          description={`Are you sure you want to delete "${selectedStory?.event}"? This action cannot be undone.`}
-          onConfirm={handleDeleteStory}
-        />
-        
-        <RenameFolderDialog 
-          folder={folder}
-          open={isRenameFolderOpen}
-          onOpenChange={setIsRenameFolderOpen}
-          onFolderRenamed={handleFolderRenamed}
-        />
-        
-        <DeleteConfirmDialog 
-          open={isDeleteFolderOpen}
-          onOpenChange={setIsDeleteFolderOpen}
-          title="Delete Folder"
-          description={`Are you sure you want to delete "${folder.name}"? This will permanently remove the folder and all its stories. This action cannot be undone.`}
-          onConfirm={handleDeleteFolder}
-        />
+          </form>
+          <Link
+            href={`/game?folder=${folder.id}`}
+            className="mt-5 inline-flex items-center gap-1.5 text-sm text-stone-500 hover:text-stone-800"
+          >
+            <Sparkles className="h-4 w-4" />
+            Or discover it by playing the game
+          </Link>
+        </div>
       </div>
-    </PageGradientBackground>
+    );
+  }
+
+  return (
+    <div className="max-w-3xl mx-auto">
+      <Link href="/collections" className="inline-flex items-center gap-2 text-sm text-stone-500 hover:text-stone-800 mb-8">
+        <ArrowLeft className="h-4 w-4" />
+        All collections
+      </Link>
+
+      <div className="flex items-center justify-between mb-8 border-b border-stone-200 pb-6">
+        <div className="flex items-center gap-2">
+          {folder.has_password && <Lock className="h-5 w-5 text-stone-400" />}
+          <h1 className="font-serif text-3xl font-bold text-stone-900">{folder.name}</h1>
+        </div>
+        <div className="flex items-center gap-2">
+          <Link
+            href={`/game?folder=${folder.id}`}
+            className="inline-flex items-center gap-2 rounded-full border border-stone-300 px-4 py-2 text-sm font-medium text-stone-700 hover:bg-stone-100"
+          >
+            <Sparkles className="h-4 w-4" />
+            Play
+          </Link>
+          <Link
+            href="/submit"
+            className="inline-flex items-center gap-2 rounded-full bg-stone-900 px-4 py-2 text-sm font-medium text-white hover:bg-stone-700"
+          >
+            <PenLine className="h-4 w-4" />
+            Share
+          </Link>
+          {folder.can_edit && folder.id !== 1 && (
+            <>
+              <button
+                onClick={openEdit}
+                className="inline-flex items-center gap-2 rounded-full border border-stone-300 px-4 py-2 text-sm font-medium text-stone-700 hover:bg-stone-100"
+              >
+                <Settings className="h-4 w-4" />
+                Manage
+              </button>
+              <button
+                onClick={async () => {
+                  const ok = await confirm({
+                    title: `Delete "${folder.name}"?`,
+                    description: "This deletes the collection and all its stories. This can't be undone.",
+                    confirmLabel: "Delete collection",
+                    destructive: true,
+                  });
+                  if (ok) deleteCollectionMutation.mutate();
+                }}
+                className="inline-flex items-center gap-2 rounded-full border border-red-200 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50"
+              >
+                <Trash2 className="h-4 w-4" />
+                Delete
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Manage collection dialog */}
+      <Dialog open={editOpen} onOpenChange={setEditOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Manage collection</DialogTitle>
+          </DialogHeader>
+          <form
+            onSubmit={(e) => { e.preventDefault(); if (editValid) updateCollectionMutation.mutate(); }}
+            className="space-y-4"
+          >
+            <div>
+              <Label htmlFor="edit-name">Name</Label>
+              <Input id="edit-name" value={editName} maxLength={50}
+                onChange={(e) => setEditName(e.target.value)} className="mt-1.5" />
+            </div>
+
+            <div>
+              <Label>Who can read it?</Label>
+              <div className="mt-2 space-y-2">
+                <label className="flex items-start gap-2 text-sm cursor-pointer">
+                  <input type="radio" name="evis" className="mt-1" checked={editVisibility === "public"} onChange={() => setEditVisibility("public")} />
+                  <span><span className="font-medium text-stone-800">Public</span> — anyone can read inside.</span>
+                </label>
+                <label className="flex items-start gap-2 text-sm cursor-pointer">
+                  <input type="radio" name="evis" className="mt-1" checked={editVisibility === "private"} onChange={() => setEditVisibility("private")} />
+                  <span><span className="font-medium text-stone-800">Private</span> — a password is needed to read inside.</span>
+                </label>
+              </div>
+            </div>
+
+            <div>
+              <Label htmlFor="edit-pw">
+                {folder.has_password ? "Change password" : "Set a password"}
+                <span className="text-stone-400"> (optional)</span>
+              </Label>
+              <Input id="edit-pw" type="password" value={editPassword} maxLength={128}
+                disabled={editRemovePassword}
+                onChange={(e) => setEditPassword(e.target.value)}
+                placeholder={folder.has_password ? "Leave blank to keep current" : "Add a password"}
+                className="mt-1.5" />
+              {folder.has_password && (
+                <label className="mt-2 flex items-center gap-2 text-sm text-stone-600 cursor-pointer">
+                  <input type="checkbox" checked={editRemovePassword}
+                    onChange={(e) => { setEditRemovePassword(e.target.checked); if (e.target.checked) setEditPassword(""); }} />
+                  Remove password (only if public)
+                </label>
+              )}
+              <p className="mt-1 text-xs text-stone-400">
+                The password is the access key — whoever has it can edit and read this collection.
+              </p>
+            </div>
+
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setEditOpen(false)}>Cancel</Button>
+              <Button type="submit" disabled={!editValid || updateCollectionMutation.isPending}>
+                {updateCollectionMutation.isPending ? "Saving..." : "Save"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {isLoadingStories ? (
+        <p className="text-center text-stone-500 py-12">Loading...</p>
+      ) : stories.length === 0 ? (
+        <div className="text-center py-16">
+          <p className="text-stone-600 mb-2">No stories in this collection yet.</p>
+          <Link href="/submit" className="text-stone-900 underline underline-offset-4">Be the first.</Link>
+        </div>
+      ) : (
+        <div className="space-y-5">
+          {stories.map((story) => (
+            <div
+              key={story.id}
+              className="rounded-lg border border-stone-200 bg-white p-6 hover:border-stone-400 transition-all"
+            >
+              <Link href={`/story/${story.id}`} className="block">
+                {story.event && (
+                  <h2 className="font-serif text-xl font-semibold text-stone-900 mb-2">{story.event}</h2>
+                )}
+                <p className="text-stone-600 leading-relaxed line-clamp-3">{story.true_version}</p>
+              </Link>
+              <div className="mt-3 flex items-center justify-between">
+                <p className="text-xs text-stone-400">{new Date(story.created_at).toLocaleDateString()}</p>
+                {folder.can_edit && (
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => navigate(`/collections/${folderId}/stories/${story.id}/edit`)}
+                      className="inline-flex items-center gap-1 text-xs text-stone-500 hover:text-stone-800 px-2 py-1"
+                    >
+                      <Pencil className="h-3.5 w-3.5" /> Edit
+                    </button>
+                    <button
+                      onClick={async () => {
+                        if (await confirm({ title: "Delete this story?", description: "This can't be undone.", confirmLabel: "Delete", destructive: true })) {
+                          deleteMutation.mutate(story.id);
+                        }
+                      }}
+                      className="inline-flex items-center gap-1 text-xs text-red-500 hover:text-red-700 px-2 py-1"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" /> Delete
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {dialog}
+    </div>
   );
 }

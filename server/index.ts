@@ -1,12 +1,38 @@
 import 'dotenv/config';
 import express, { type Request, Response, NextFunction } from "express";
+import helmet from "helmet";
+import session from "express-session";
+import connectPgSimple from "connect-pg-simple";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
+import { storage } from "./storage";
+import { pool } from "./db";
 
 
 const app = express();
+// Baseline security headers. CSP is left off for now (the Vite dev client and
+// inline styles need a tailored policy); revisit when adding HTTPS/deploy.
+app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
+
+// Server-side sessions (admin auth + collection unlocks live here).
+const PgSession = connectPgSimple(session);
+app.set("trust proxy", 1);
+app.use(
+  session({
+    store: new PgSession({ pool, createTableIfMissing: true }),
+    secret: process.env.SESSION_SECRET || "dev-insecure-secret-change-me",
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      maxAge: 1000 * 60 * 60 * 24 * 7, // 1 week
+    },
+  }),
+);
 
 
 app.use((req, res, next) => {
@@ -46,6 +72,15 @@ app.use((req, res, next) => {
 
 
 (async () => {
+ // Seed starter data if empty, then run the one-time backfill (legacy fakes →
+ // story_fakes, existing stories → approved). Both are idempotent/guarded.
+ try {
+   await storage.initializeTestData();
+   await storage.backfillFakesAndStatus();
+ } catch (err) {
+   console.error("Startup data init/backfill failed:", err);
+ }
+
  const server = await registerRoutes(app);
 
 

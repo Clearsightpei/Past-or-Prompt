@@ -14,33 +14,21 @@ import StatCard from "@/components/StatCard";
 import { Search } from "@/components/ui/search";
 import { useFolders } from "@/hooks/useFolders";
 import { apiRequest } from "@/lib/queryClient";
+import { useSession } from "@/context/SessionContext";
 import { AnimatePresence, motion } from "framer-motion";
-import PageGradientBackground from "@/components/PageGradientBackground";
 
 export default function Game() {
   const [location, setLocation] = useLocation();
-  const [currentFolderId, setCurrentFolderId] = useState("1");
-  const [sessionReady, setSessionReady] = useState(false);
-  const [sessionId, setSessionId] = useState("");
+  // Read ?folder= synchronously on first render so a "Play" link from a
+  // collection locks onto that collection immediately (no flash of the default).
+  const [currentFolderId, setCurrentFolderId] = useState(
+    () => new URLSearchParams(window.location.search).get("folder") || "",
+  );
+  // Single source of truth for the anonymous session id.
+  const { sessionId } = useSession();
   const { toast } = useToast();
-  const [showHint, setShowHint] = useState(false);
-  
-  // Initialize session ID
-  useEffect(() => {
-    const existingSessionId = localStorage.getItem("true-false-history-session");
-    if (existingSessionId) {
-      console.log("Using existing sessionId:", existingSessionId);
-      setSessionId(existingSessionId);
-    } else {
-      const randomId = Math.random().toString(36).substring(2, 15);
-      console.log("Generated new sessionId:", randomId);
-      localStorage.setItem("true-false-history-session", randomId);
-      setSessionId(randomId);
-    }
-    setSessionReady(true);
-  }, []);
-  
-  // Parse folder ID from URL on initial load
+
+  // Keep in sync if the ?folder= changes via in-app navigation.
   useEffect(() => {
     const params = new URLSearchParams(location.split('?')[1] || '');
     const folderParam = params.get("folder");
@@ -48,25 +36,34 @@ export default function Game() {
       setCurrentFolderId(folderParam);
     }
   }, [location]);
-  
+
   const [folderSearch, setFolderSearch] = useState("");
   const [showUserStats, setShowUserStats] = useState(false);
   const [showOverallStats, setShowOverallStats] = useState(false);
   const [currentStoryIndex, setCurrentStoryIndex] = useState(0);
   const [selectedChoice, setSelectedChoice] = useState<"true" | "fake" | null>(null);
   const [isCorrect, setIsCorrect] = useState<boolean | null>(null);
-  
+
   // Fetch folders for dropdown with search term applied
   const { data: folders, isLoading: isLoadingFolders } = useFolders(folderSearch);
-  
-  // Fetch stories for the selected folder
+
+  // Default to the first available collection (General is hidden from the game).
+  useEffect(() => {
+    if (!currentFolderId && folders && folders.length > 0) {
+      setCurrentFolderId(folders[0].id.toString());
+    }
+  }, [folders, currentFolderId]);
+
+  // Fetch stories for the selected collection — the game endpoint reveals ALL
+  // approved stories regardless of the collection's privacy.
   const { data: stories = [], isLoading: isLoadingStories, refetch: refetchStories } = useQuery({
-    queryKey: ['/api/stories', { folder: currentFolderId }],
+    queryKey: ['/api/game/stories', { folder: currentFolderId }],
     queryFn: async () => {
-      const response = await fetch(`/api/stories?folder=${currentFolderId}`);
+      const response = await fetch(`/api/game/stories?folder=${currentFolderId}`, { credentials: "include" });
       if (!response.ok) throw new Error('Failed to fetch stories');
       return response.json() as Promise<Story[]>;
-    }
+    },
+    enabled: !!currentFolderId,
   });
   
   // Fetch user stats
@@ -116,7 +113,19 @@ export default function Game() {
   });
   
   const currentStory = stories[currentStoryIndex];
-  
+
+  // Fetch a cached AI fake for the current story (fast — pre-generated server-side).
+  const { data: fakeData, isLoading: isLoadingFake } = useQuery({
+    queryKey: ['/api/stories/fake', currentStory?.id],
+    queryFn: async () => {
+      const response = await fetch(`/api/stories/${currentStory!.id}/fake`);
+      if (!response.ok) return { fake_version: null };
+      return response.json() as Promise<{ fake_version: string | null }>;
+    },
+    enabled: !!currentStory,
+  });
+  const fakeVersion = fakeData?.fake_version ?? null;
+
   // Handle folder change
   const handleFolderChange = (folderId: string) => {
     // Update URL with new folder ID
@@ -206,13 +215,13 @@ export default function Game() {
   }
   
   return (
-    <div className="min-h-screen w-full bg-neutral-100">
-      <PageGradientBackground>
-        {/* Main game content (white card, story boxes, controls, etc.) */}
+    <div className="max-w-4xl mx-auto">
+      <div>
+        {/* Main game content */}
         <div className="mb-6 flex flex-col sm:flex-row items-start sm:items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-neutral-800">Spot the Truth: Can You Tell AI from Human? </h1>
-            <p className="text-xs text-[#00ffe0] mt-1">Most humans claim that they can tell human text from AI. Can you?</p>
+            <h1 className="font-serif text-3xl font-bold text-stone-900">Spot the Truth</h1>
+            <p className="text-sm text-stone-500 mt-1">One of these is real, one is AI. Most people think they can tell. Can you?</p>
           </div>
           
           <div className="mt-4 sm:mt-0 flex flex-col sm:flex-row items-start sm:items-center space-y-2 sm:space-y-0 sm:space-x-4">
@@ -248,43 +257,31 @@ export default function Game() {
             <Clock className="mr-2 h-5 w-5" />
             {showUserStats ? "Hide My Stats" : "Show My Stats"}
           </Button>
-          <Button 
-            variant="outline" 
+          <Button
+            variant="outline"
             onClick={() => setShowOverallStats(!showOverallStats)}
             disabled={!storyStats || storyStats.length === 0}
           >
             <BarChart3 className="mr-2 h-5 w-5" />
             {showOverallStats ? "Hide Overall Stats" : "Show Overall Stats"}
           </Button>
-          {currentStory?.hint ? (
-            <Button 
-              variant="outline" 
-              onClick={() => setShowHint((v) => !v)}
-              className="ml-2"
-            >
-              💡 Show Hint
-            </Button>
-          ) : null}
         </div>
 
         {currentStory && (
           <>
-            {/* Show hint bubble if toggled */}
-            {showHint && currentStory.hint && (
-              <div className="relative flex justify-end mb-4">
-                <div className="!bg-[#fff702] !text-[#450063] rounded-2xl shadow-lg px-5 py-3 max-w-md text-base font-medium relative thought-bubble">
-                  {currentStory.hint}
-                  <span className="absolute right-6 -bottom-4 w-0 h-0 border-t-8 border-t-[#fff702] border-x-8 border-x-transparent"></span>
-                </div>
-              </div>
-            )}
             {/* Story Context */}
-            <Card className="bg-[#2d203f] rounded-lg shadow p-6 mb-6">
-              <CardContent className="p-0">
-                <h2 className="text-xl font-semibold text-white mb-2">{currentStory.event}</h2>
-                <p className="!text-[#ded700]">{currentStory.introduction}</p>
-              </CardContent>
-            </Card>
+            {(currentStory.event || currentStory.introduction) && (
+              <Card className="bg-white border-stone-200 rounded-lg shadow-sm p-6 mb-6">
+                <CardContent className="p-0">
+                  {currentStory.event && (
+                    <h2 className="font-serif text-xl font-semibold text-stone-900 mb-2">{currentStory.event}</h2>
+                  )}
+                  {currentStory.introduction && (
+                    <p className="text-stone-600">{currentStory.introduction}</p>
+                  )}
+                </CardContent>
+              </Card>
+            )}
 
             {/* Animated Story Versions */}
             <AnimatePresence mode="wait" initial={false}>
@@ -295,11 +292,20 @@ export default function Game() {
                 exit={{ opacity: 0, y: -40 }}
                 transition={{ duration: 0.35, type: "spring", stiffness: 120, damping: 20 }}
               >
-                <StoryCard
-                  story={currentStory}
-                  onSelect={handleSelectChoice}
-                  isSelectable={selectedChoice === null}
-                />
+                {fakeVersion ? (
+                  <StoryCard
+                    story={currentStory}
+                    fakeVersion={fakeVersion}
+                    onSelect={handleSelectChoice}
+                    isSelectable={selectedChoice === null}
+                  />
+                ) : (
+                  <div className="text-center py-8 text-stone-500">
+                    {isLoadingFake
+                      ? "Loading story..."
+                      : "The AI version for this story isn't ready yet. Try another story."}
+                  </div>
+                )}
               </motion.div>
             </AnimatePresence>
 
@@ -307,7 +313,7 @@ export default function Game() {
             {selectedChoice !== null && isCorrect !== null && (
               <FeedbackMessage
                 isCorrect={isCorrect}
-                explanation={currentStory.explanation}
+                explanation={currentStory.explanation ?? ""}
               />
             )}
           </>
@@ -316,8 +322,8 @@ export default function Game() {
         {/* User Stats */}
         {showUserStats && userStats && (
           <div className="mb-6">
-            <h3 className="text-lg font-medium text-neutral-800 mb-3">
-              Your Stats - {folders?.find(f => f.id.toString() === currentFolderId)?.name || "General"} Folder
+            <h3 className="text-lg font-medium text-stone-800 mb-3">
+              Your stats — {folders?.find(f => f.id.toString() === currentFolderId)?.name || "this collection"}
             </h3>
             <div className="bg-white shadow rounded-lg p-6">
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -332,8 +338,8 @@ export default function Game() {
         {/* Overall Stats */}
         {showOverallStats && storyStats && storyStats.length > 0 && (
           <div className="mb-6">
-            <h3 className="text-lg font-medium text-neutral-800 mb-3">
-              Overall Stats - {folders?.find(f => f.id.toString() === currentFolderId)?.name || "General"} Folder
+            <h3 className="text-lg font-medium text-stone-800 mb-3">
+              Overall stats — {folders?.find(f => f.id.toString() === currentFolderId)?.name || "this collection"}
             </h3>
             <div className="bg-white shadow rounded-lg p-6">
               <div className="overflow-x-auto">
@@ -377,7 +383,7 @@ export default function Game() {
             </div>
           </div>
         )}
-      </PageGradientBackground>
+      </div>
     </div>
   );
 }

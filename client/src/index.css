@@ -3,22 +3,16 @@
 @tailwind utilities;
 
 @layer base {
-  * {
-    color: #00f7fb !important;
-  }
-
+  /* Editorial archive default: warm dark ink on light paper. No global
+     !important override, so component-level Tailwind text colors apply. */
   body {
-    color: #00f7fb !important;
-    background: linear-gradient(135deg, #1e1f4b 0%, #44355b 60%, #ffd700 100%);
-    background-attachment: fixed;
+    color: #292524; /* stone-800 */
+    background-color: #fafaf9; /* stone-50 */
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
-
-  .thought-bubble {
-    position: relative;
-    background: #ff9502 !important;
-    color: #000 !important;
-  }
-  .thought-bubble::after {
-    content: none;
+  /* Tighten display serif headings a touch. */
+  .font-serif {
+    letter-spacing: -0.01em;
   }
 }

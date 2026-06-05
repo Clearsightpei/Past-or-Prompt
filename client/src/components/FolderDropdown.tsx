@@ -44,7 +44,7 @@ export default function FolderDropdown({ value, onChange, searchQuery = "" }: Fo
   
   return (
     <Select value={selectedValue} onValueChange={handleValueChange}>
-      <SelectTrigger className="w-full bg-transparent text-[#00ffe0] border-2 border-[#00ffe0] focus:ring-2 focus:ring-[#00ffe0]">
+      <SelectTrigger className="w-full bg-white text-stone-800 border-stone-300">
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
