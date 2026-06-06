@@ -110,6 +110,39 @@ function canViewCollection(
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // ---------------------------------------------------------------------------
+  // SEO: robots.txt + dynamic sitemap (registered before the SPA catch-all)
+  // ---------------------------------------------------------------------------
+
+  const siteBase = (req: Request) =>
+    process.env.APP_URL || `${req.protocol}://${req.get("host")}`;
+
+  app.get("/robots.txt", (req, res) => {
+    res.type("text/plain").send(`User-agent: *\nAllow: /\nSitemap: ${siteBase(req)}/sitemap.xml\n`);
+  });
+
+  app.get("/sitemap.xml", async (req, res) => {
+    try {
+      const base = siteBase(req);
+      const stories = await storage.getArchiveFeed(undefined, "new", 2000, 0);
+      const staticUrls = ["/", "/submit", "/collections", "/game"];
+      const entries = [
+        ...staticUrls.map((u) => `  <url><loc>${base}${u}</loc></url>`),
+        ...stories.map(
+          (s) =>
+            `  <url><loc>${base}/story/${s.id}</loc><lastmod>${new Date(s.created_at).toISOString()}</lastmod></url>`,
+        ),
+      ];
+      res
+        .type("application/xml")
+        .send(
+          `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${entries.join("\n")}\n</urlset>\n`,
+        );
+    } catch (error) {
+      res.status(500).type("text/plain").send("sitemap error");
+    }
+  });
+
+  // ---------------------------------------------------------------------------
   // Accounts (signup / login / logout / me)
   // ---------------------------------------------------------------------------
 
