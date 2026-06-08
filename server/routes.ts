@@ -71,32 +71,50 @@ async function remoderateStory(storyId: number): Promise<void> {
   }
 }
 
-// Editing (stories + the collection itself) requires: admin, OR the account
-// that owns the collection, OR a session that unlocked it (created it this
-// session, or entered its password). General (id 1) stays admin-only.
-function canEditCollection(
-  req: Request,
-  folder: { id: number; password_hash: string | null; owner_user_id?: number | null },
-): boolean {
+type FolderPerm = { id: number; password_hash: string | null; owner_user_id?: number | null };
+
+// CONTRIBUTE = add / edit / move stories within a collection.
+// - admin or the owner: always.
+// - public, no password: any LOGGED-IN user (open collaboration, accountable).
+// - has a password (public-with-pw or private): only a session that unlocked it.
+// - General (id 1): false here — General stories are gated per-author in canEditStory.
+function canEditCollection(req: Request, folder: FolderPerm): boolean {
   if (req.session?.isAdmin) return true;
-  if (folder.id === 1) return false; // General is admin-only
+  if (folder.id === 1) return false;
   if (folder.owner_user_id && req.session?.userId === folder.owner_user_id) return true;
+  if (!folder.password_hash) return !!req.session?.userId;
   return (req.session?.unlockedCollections || []).includes(folder.id);
 }
 
-// A story can be edited/deleted by: its author (logged-in owner), an admin, or
-// anyone with edit access to its collection (unlocked password).
+// MANAGE = rename / delete / change password or visibility. Owner + admin ONLY,
+// so a friend who has the password can contribute but can't destroy it.
+function canManageCollection(req: Request, folder: FolderPerm): boolean {
+  if (req.session?.isAdmin) return true;
+  if (folder.id === 1) return false;
+  return !!(folder.owner_user_id && req.session?.userId === folder.owner_user_id);
+}
+
+// Can drop a story INTO this collection (a move's destination side). Same as
+// contribute, plus General accepts any logged-in mover (re-filing to the pool).
+function canAddToCollection(req: Request, folder: FolderPerm): boolean {
+  if (folder.id === 1) return !!(req.session?.userId || req.session?.isAdmin);
+  return canEditCollection(req, folder);
+}
+
+// A story can be edited/deleted/moved-out by: admin, its author (always — your
+// words are yours), or anyone who can contribute to its collection.
 function canEditStory(
   req: Request,
   story: { author_user_id: number | null },
-  folder: { id: number; password_hash: string | null },
+  folder: FolderPerm,
 ): boolean {
+  if (req.session?.isAdmin) return true;
   if (req.session?.userId && story.author_user_id === req.session.userId) return true;
   return canEditCollection(req, folder);
 }
 
-// Reading inside a collection: admin always; General is a public aggregate;
-// public collections are open; private require a session unlock.
+// READ inside a collection: admin always; General is the public aggregate;
+// public collections are open to all; private require owner/unlock.
 function canViewCollection(
   req: Request,
   folder: { id: number; visibility: string; password_hash: string | null; owner_user_id?: number | null },
@@ -303,21 +321,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Folders / collections
   // ---------------------------------------------------------------------------
 
-  // GET /api/folders - Collections list (General hidden unless admin)
+  // GET /api/folders - Collections list with per-caller access flags. Strips
+  // password_hash/owner_user_id; private collections are still LISTED (by name,
+  // locked) so they're discoverable + playable in the Game.
   app.get("/api/folders", async (req, res) => {
     try {
       const search = req.query.search as string | undefined;
-      const includeGeneral = !!req.session?.isAdmin;
-      const folders = search
-        ? await storage.searchFolders(search, includeGeneral)
-        : await storage.getFolders(includeGeneral);
-      res.json(folders);
+      const rows = search ? await storage.searchFolders(search) : await storage.getFolders();
+      res.json(rows.map((f) => ({
+        id: f.id,
+        name: f.name,
+        visibility: f.visibility,
+        has_password: !!f.password_hash,
+        story_count: f.story_count,
+        can_edit: canEditCollection(req, f),
+        can_add: canAddToCollection(req, f),
+        can_manage: canManageCollection(req, f),
+      })));
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch folders" });
     }
   });
 
-  // GET /api/folders/:id - Get folder by ID
+  // GET /api/folders/:id - Get folder by ID + the caller's access flags
   app.get("/api/folders/:id", async (req, res) => {
     try {
       const id = parseInt(req.params.id);
@@ -330,13 +356,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ message: "Folder not found" });
       }
 
-      // Never leak the password hash; surface the caller's access instead.
-      const { password_hash, ...safe } = folder;
+      // Never leak password_hash/owner_user_id; surface the caller's access.
+      const { password_hash, owner_user_id, ...safe } = folder;
       res.json({
         ...safe,
         has_password: !!password_hash,
         can_view: canViewCollection(req, folder),
         can_edit: canEditCollection(req, folder),
+        can_add: canAddToCollection(req, folder),
+        can_manage: canManageCollection(req, folder),
       });
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch folder" });
@@ -413,8 +441,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const folder = await storage.getFolderById(id);
       if (!folder) return res.status(404).json({ message: "Folder not found" });
-      if (!canEditCollection(req, folder)) {
-        return res.status(403).json({ message: "This collection is locked. Unlock it first." });
+      if (!canManageCollection(req, folder)) {
+        return res.status(403).json({ message: "Only the owner can manage this collection." });
       }
 
       const { name, visibility, password, removePassword } = updateFolderSchema.parse(req.body);
@@ -466,8 +494,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const folder = await storage.getFolderById(id);
       if (!folder) return res.status(404).json({ message: "Folder not found" });
-      if (!canEditCollection(req, folder)) {
-        return res.status(403).json({ message: "This collection is locked. Unlock it first." });
+      if (!canManageCollection(req, folder)) {
+        return res.status(403).json({ message: "Only the owner can delete this collection." });
       }
 
       // Stories cascade-delete via the FK, so just delete the folder.
@@ -511,7 +539,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const list = await storage.getApprovedStoriesByFolder(folderId);
-      res.json(list);
+      // Per-story can_edit so the collection page shows controls on exactly the
+      // stories this caller may edit/move (covers the author override).
+      res.json(list.map((s) => ({ ...s, can_edit: canEditStory(req, s, folder) })));
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch stories" });
     }
@@ -727,12 +757,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const existing = await storage.getStoryById(id);
       if (!existing) return res.status(404).json({ message: "Story not found" });
-      const folder = await storage.getFolderById(existing.folder_id);
-      if (!folder || !canEditStory(req, existing, folder)) {
-        return res.status(403).json({ message: "You don't have access to move this story." });
+      if (existing.folder_id === folderId) return res.json(existing); // no-op
+
+      // Both-ends check: you must be able to remove it from its current home AND
+      // add it to the destination. Stops anyone pulling a story out of a
+      // collection they don't control, or dumping into one they can't add to.
+      const source = await storage.getFolderById(existing.folder_id);
+      if (!source || !canEditStory(req, existing, source)) {
+        return res.status(403).json({ message: "You don't have access to move this story out of its collection." });
       }
       const target = await storage.getFolderById(folderId);
       if (!target) return res.status(404).json({ message: "Target collection not found" });
+      if (!canAddToCollection(req, target)) {
+        return res.status(403).json({ message: "You don't have access to add stories to that collection." });
+      }
 
       const moved = await storage.moveStory(id, folderId);
       res.json(moved);

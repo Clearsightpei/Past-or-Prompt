@@ -1,5 +1,16 @@
 import { useQuery } from "@tanstack/react-query";
-import { PublicFolder } from "@shared/schema";
+
+// A collection as listed, with the caller's access flags.
+export type FolderListItem = {
+  id: number;
+  name: string;
+  visibility: string;
+  has_password: boolean;
+  story_count: number;
+  can_edit: boolean;   // contribute: add/edit/move stories
+  can_add: boolean;    // can be a move destination
+  can_manage: boolean; // rename/delete/change settings (owner/admin)
+};
 
 // Hook to fetch all collections (folders). Never includes the password hash.
 export function useFolders(search?: string) {
@@ -12,14 +23,15 @@ export function useFolders(search?: string) {
       ? `/api/folders?search=${encodeURIComponent(search)}`
       : `/api/folders`;
 
-    const response = await fetch(url);
+    const response = await fetch(url, { credentials: "include" });
     if (!response.ok) throw new Error('Failed to fetch collections');
-    return response.json() as Promise<PublicFolder[]>;
+    return response.json() as Promise<FolderListItem[]>;
   };
 
   return useQuery({
     queryKey,
-    queryFn
+    queryFn,
+    staleTime: 0,
   });
 }
 
@@ -30,6 +42,8 @@ export type FolderAccess = {
   has_password: boolean;
   can_view: boolean;
   can_edit: boolean;
+  can_add: boolean;
+  can_manage: boolean;
 };
 
 // Hook to fetch a single collection by ID (includes the caller's access flags).

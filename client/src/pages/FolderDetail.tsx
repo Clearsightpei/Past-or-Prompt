@@ -15,8 +15,10 @@ import {
 } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { useFolder } from "@/hooks/useFolders";
+import { useFolder, useFolders } from "@/hooks/useFolders";
 import { useConfirm } from "@/hooks/useConfirm";
+
+type StoryWithEdit = Story & { can_edit?: boolean };
 
 // Collection view: read the stories, unlock if private, and (with access) edit
 // or delete stories. The game always reveals everything regardless of lock.
@@ -41,15 +43,27 @@ export default function FolderDetail() {
   }, [folderId, navigate]);
 
   const { data: folder, isLoading: isLoadingFolder } = useFolder(folderId);
+  const { data: collections } = useFolders();
 
   const { data: stories = [], isLoading: isLoadingStories } = useQuery({
     queryKey: [`/api/stories`, { folder: folderId }],
     queryFn: async () => {
       const response = await fetch(`/api/stories?folder=${folderId}`, { credentials: "include" });
       if (!response.ok) throw new Error('Failed to fetch stories');
-      return response.json() as Promise<Story[]>;
+      return response.json() as Promise<StoryWithEdit[]>;
     },
     enabled: !isNaN(folderId) && !!folder?.can_view,
+  });
+
+  const moveMutation = useMutation({
+    mutationFn: async ({ storyId, target }: { storyId: number; target: number }) => {
+      await apiRequest("POST", `/api/stories/${storyId}/move`, { folder_id: target });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/stories'] });
+      toast({ title: "Story moved" });
+    },
+    onError: () => toast({ title: "Couldn't move", description: "You may not have access to that collection.", variant: "destructive" }),
   });
 
   const unlockMutation = useMutation({
@@ -202,7 +216,7 @@ export default function FolderDetail() {
             <PenLine className="h-4 w-4" />
             Share
           </Link>
-          {folder.can_edit && folder.id !== 1 && (
+          {folder.can_manage && folder.id !== 1 && (
             <>
               <button
                 onClick={openEdit}
@@ -279,8 +293,26 @@ export default function FolderDetail() {
                 </label>
               )}
               <p className="mt-1 text-xs text-stone-400">
-                The password is the access key — whoever has it can edit and read this collection.
+                The password is a shareable key. Keep it safe — it can't be recovered.
               </p>
+            </div>
+
+            {/* Plain-language summary of the resulting access level */}
+            <div className="rounded-md bg-stone-50 border border-stone-200 p-3 text-xs text-stone-600 space-y-1">
+              <p className="font-semibold text-stone-700">
+                {editVisibility === "private"
+                  ? "🔒 Private"
+                  : (folder.has_password && !editRemovePassword) || editPassword.trim()
+                  ? "🔑 Public, password-protected"
+                  : "🌐 For everyone (open)"}
+              </p>
+              {editVisibility === "private" ? (
+                <p>Only you and people with the password can read or edit. Hidden from the archive, but playable in the Game.</p>
+              ) : (folder.has_password && !editRemovePassword) || editPassword.trim() ? (
+                <p>Anyone can read it. Only you and people with the password can add, edit, or move stories.</p>
+              ) : (
+                <p>Anyone can read it; any signed-in person can add/edit/move stories. Only you can rename or delete it.</p>
+              )}
             </div>
 
             <DialogFooter>
@@ -313,9 +345,9 @@ export default function FolderDetail() {
                 )}
                 <p className="text-stone-600 leading-relaxed line-clamp-3">{story.true_version}</p>
               </Link>
-              <div className="mt-3 flex items-center justify-between">
+              <div className="mt-3 flex items-center justify-between gap-2">
                 <p className="text-xs text-stone-400">{new Date(story.created_at).toLocaleDateString()}</p>
-                {folder.can_edit && (
+                {story.can_edit && (
                   <div className="flex items-center gap-1">
                     <button
                       onClick={() => navigate(`/collections/${folderId}/stories/${story.id}/edit`)}
@@ -333,6 +365,16 @@ export default function FolderDetail() {
                     >
                       <Trash2 className="h-3.5 w-3.5" /> Delete
                     </button>
+                    <select
+                      value=""
+                      onChange={(e) => { if (e.target.value) moveMutation.mutate({ storyId: story.id, target: Number(e.target.value) }); }}
+                      className="rounded-md border border-stone-300 bg-white px-2 py-1 text-xs text-stone-600"
+                    >
+                      <option value="">Move to…</option>
+                      {collections?.filter((c) => c.id !== folderId && c.can_add).map((c) => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                      ))}
+                    </select>
                   </div>
                 )}
               </div>

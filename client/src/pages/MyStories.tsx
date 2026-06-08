@@ -156,7 +156,7 @@ export default function MyStories() {
                     className="ml-auto rounded-md border border-stone-300 bg-white px-2 py-1 text-xs text-stone-600"
                   >
                     <option value="">Move to…</option>
-                    {collections?.filter((c) => c.id !== story.folder_id).map((c) => (
+                    {collections?.filter((c) => c.id !== story.folder_id && c.can_add).map((c) => (
                       <option key={c.id} value={c.id}>{c.name}</option>
                     ))}
                   </select>

@@ -10,11 +10,22 @@ import {
 import { db } from "./db";
 import { eq, like, count, sql, and, desc, asc, inArray } from "drizzle-orm";
 
+// Internal folder-list row: includes raw password_hash + owner_user_id so the
+// route can compute per-caller access flags, then strip the secrets.
+export type FolderListRow = {
+  id: number;
+  name: string;
+  visibility: string;
+  password_hash: string | null;
+  owner_user_id: number | null;
+  story_count: number;
+};
+
 export interface IStorage {
   // Folder operations
-  getFolders(includeGeneral?: boolean): Promise<PublicFolder[]>;
+  getFolders(includeGeneral?: boolean): Promise<FolderListRow[]>;
   getFolderById(id: number): Promise<Folder | undefined>;
-  searchFolders(query: string, includeGeneral?: boolean): Promise<PublicFolder[]>;
+  searchFolders(query: string, includeGeneral?: boolean): Promise<FolderListRow[]>;
   createFolder(name: string, visibility: string, passwordHash?: string | null, ownerUserId?: number): Promise<Folder>;
   updateFolder(id: number, folder: InsertFolder): Promise<Folder | undefined>;
   updateFolderSettings(id: number, name: string, visibility: string, passwordHash?: string | null): Promise<Folder | undefined>;
@@ -83,20 +94,20 @@ export interface IStorage {
 }
 
 export class DatabaseStorage implements IStorage {
-  // Folder operations. Counts reflect APPROVED stories only, and we never leak
-  // the password hash — just a `has_password` boolean.
-  // includeGeneral=true is for admins; the public never sees the General folder.
-  async getFolders(includeGeneral = false): Promise<PublicFolder[]> {
+  // Folder operations. Counts reflect APPROVED stories only. Returns the raw
+  // password_hash + owner_user_id so the route can compute per-caller access
+  // flags; the route strips those before responding to the client.
+  async getFolders(includeGeneral = false): Promise<FolderListRow[]> {
     return this.queryFolders(undefined, includeGeneral);
   }
 
-  async searchFolders(query: string, includeGeneral = false): Promise<PublicFolder[]> {
+  async searchFolders(query: string, includeGeneral = false): Promise<FolderListRow[]> {
     if (!query) return this.getFolders(includeGeneral);
     return this.queryFolders(query, includeGeneral);
   }
 
-  private async queryFolders(query?: string, _includeGeneral = false): Promise<PublicFolder[]> {
-    // General (id 1) is now a public aggregate, shown to everyone.
+  private async queryFolders(query?: string, _includeGeneral = false): Promise<FolderListRow[]> {
+    // General (id 1) is a public aggregate, shown to everyone.
     const conditions = [];
     if (query) conditions.push(like(folders.name, `%${query}%`));
 
@@ -106,6 +117,7 @@ export class DatabaseStorage implements IStorage {
         name: folders.name,
         visibility: folders.visibility,
         password_hash: folders.password_hash,
+        owner_user_id: folders.owner_user_id,
         story_count: count(stories.id).as("story_count"),
       })
       .from(folders)
@@ -114,14 +126,15 @@ export class DatabaseStorage implements IStorage {
         and(eq(folders.id, stories.folder_id), eq(stories.status, "approved")),
       )
       .where(conditions.length ? and(...conditions) : undefined)
-      .groupBy(folders.id, folders.name, folders.visibility, folders.password_hash)
+      .groupBy(folders.id, folders.name, folders.visibility, folders.password_hash, folders.owner_user_id)
       .orderBy(asc(folders.id));
 
     return result.map(row => ({
       id: row.id,
       name: row.name,
       visibility: row.visibility,
-      has_password: !!row.password_hash,
+      password_hash: row.password_hash,
+      owner_user_id: row.owner_user_id,
       story_count: Number(row.story_count) || 0,
     }));
   }

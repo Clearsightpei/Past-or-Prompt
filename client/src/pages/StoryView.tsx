@@ -17,6 +17,7 @@ import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useSession } from "@/context/SessionContext";
 import { useConfirm } from "@/hooks/useConfirm";
+import { useFolders } from "@/hooks/useFolders";
 import { ArrowLeft, ArrowRight, Flag, Sparkles, Pencil, Trash2 } from "lucide-react";
 
 const REPORT_REASONS = [
@@ -34,6 +35,7 @@ export default function StoryView() {
   const { toast } = useToast();
   const { sessionId } = useSession();
   const { confirm, dialog } = useConfirm();
+  const { data: collections } = useFolders();
 
   const [reportOpen, setReportOpen] = useState(false);
   const [reason, setReason] = useState("spam");
@@ -86,6 +88,17 @@ export default function StoryView() {
     }
   };
 
+  const handleMove = async (target: number) => {
+    try {
+      await apiRequest("POST", `/api/stories/${id}/move`, { folder_id: target });
+      queryClient.invalidateQueries({ queryKey: [`/api/stories/${id}`] });
+      queryClient.invalidateQueries({ queryKey: ["/api/stories"] });
+      toast({ title: "Story moved" });
+    } catch {
+      toast({ title: "Couldn't move", description: "You may not have access to that collection.", variant: "destructive" });
+    }
+  };
+
   if (isLoading) return <p className="text-center text-stone-500 py-12">Loading...</p>;
   if (error || !story) {
     return (
@@ -125,13 +138,23 @@ export default function StoryView() {
 
       {/* Owner/admin controls */}
       {story.can_edit && (
-        <div className="mt-8 flex items-center gap-2">
+        <div className="mt-8 flex flex-wrap items-center gap-2">
           <Button variant="outline" size="sm" onClick={() => navigate(`/collections/${story.folder_id}/stories/${story.id}/edit`)}>
             <Pencil className="h-4 w-4 mr-1.5" /> Edit
           </Button>
           <Button variant="outline" size="sm" className="text-red-600 hover:text-red-700" onClick={handleDelete}>
             <Trash2 className="h-4 w-4 mr-1.5" /> Delete
           </Button>
+          <select
+            value=""
+            onChange={(e) => { if (e.target.value) handleMove(Number(e.target.value)); }}
+            className="rounded-md border border-stone-300 bg-white px-2 py-1.5 text-sm text-stone-600"
+          >
+            <option value="">Move to…</option>
+            {collections?.filter((c) => c.id !== story.folder_id && c.can_add).map((c) => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
         </div>
       )}
 

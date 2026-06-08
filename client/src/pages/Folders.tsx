@@ -115,10 +115,26 @@ export default function Folders() {
                   className="mt-1.5"
                 />
                 <p className="mt-1 text-xs text-stone-400">
-                  The password is the access key — whoever has it can edit and delete stories
-                  here{visibility === "private" ? " and read the private contents" : ""}. The
-                  game always reveals every collection. Keep it safe; it can't be recovered.
+                  The password is a shareable key. Keep it safe — it can't be recovered.
                 </p>
+              </div>
+
+              {/* Clear, plain-language summary of the chosen access level */}
+              <div className="rounded-md bg-stone-50 border border-stone-200 p-3 text-xs text-stone-600 space-y-1">
+                <p className="font-semibold text-stone-700">
+                  {visibility === "private"
+                    ? "🔒 Private"
+                    : password.trim()
+                    ? "🔑 Public, password-protected"
+                    : "🌐 For everyone (open)"}
+                </p>
+                {visibility === "private" ? (
+                  <p>Only you and people with the password can read or edit. Hidden from the archive, but anyone can still play it in the Game.</p>
+                ) : password.trim() ? (
+                  <p>Anyone can read it. Only you and people with the password can add, edit, or move stories.</p>
+                ) : (
+                  <p>Anyone can read it; any signed-in person can add/edit/move stories. Only you (the owner) can rename or delete the collection.</p>
+                )}
               </div>
 
               <DialogFooter>

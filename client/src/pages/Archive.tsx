@@ -40,8 +40,13 @@ export default function Archive() {
   return (
     <div className="max-w-3xl mx-auto">
       <header className="text-center mb-10 border-b border-stone-200 pb-8">
-        <h1 className="font-serif text-4xl sm:text-5xl font-bold text-stone-900 tracking-tight">The Treehole Archive</h1>
-        <p className="mt-3 text-stone-600 text-lg">True stories from the valley, shared anonymously.</p>
+        <h1 className="font-serif text-4xl sm:text-5xl font-bold text-stone-900 tracking-tight">Treehole Archive</h1>
+        <p className="mt-4 text-stone-600 text-lg leading-relaxed max-w-2xl mx-auto">
+          A public space to share and preserve true personal stories for the future. Explore the
+          collection, contribute your own experiences, and play the game to see if you can spot the
+          difference between truth and AI misinformation. Join us in protecting our collective
+          history from digital distortion.
+        </p>
         <div className="mt-6 flex items-center justify-center gap-3">
           <Link href="/submit" className="inline-flex items-center gap-2 rounded-full bg-stone-900 px-5 py-2.5 text-sm font-medium text-white hover:bg-stone-700 transition-colors">
             <PenLine className="h-4 w-4" /> Share your story
