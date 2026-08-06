@@ -41,6 +41,7 @@ export default function StoryView() {
   const [reason, setReason] = useState("spam");
   const [details, setDetails] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [tab, setTab] = useState<"story" | "transcript">("story");
 
   const { data: story, isLoading, error } = useQuery({
     queryKey: [`/api/stories/${id}`],
@@ -109,9 +110,16 @@ export default function StoryView() {
     );
   }
 
-  const words = story.true_version.trim().split(/\s+/).length;
+  const hasStory = story.true_version.trim().length > 0;
+  const transcript = (story.transcript ?? "").trim();
+  const hasTranscript = transcript.length > 0;
+  const both = hasStory && hasTranscript;
+  // Which body text is showing: honor the tab only when both exist.
+  const activeText = both ? (tab === "story" ? story.true_version : transcript) : hasStory ? story.true_version : transcript;
+  const words = activeText.trim() ? activeText.trim().split(/\s+/).length : 0;
   const minRead = Math.max(1, Math.round(words / 200));
-  const paragraphs = story.true_version.split(/\n\s*\n/).filter((p) => p.trim());
+  const paragraphs = activeText.split(/\n\s*\n/).filter((p) => p.trim());
+  const shownDate = story.display_date ? new Date(story.display_date + "T00:00:00") : new Date(story.created_at);
 
   return (
     <article className="max-w-2xl mx-auto">
@@ -124,17 +132,46 @@ export default function StoryView() {
         <h1 className="font-serif text-3xl sm:text-4xl font-bold text-stone-900 leading-tight mb-3">{story.event}</h1>
       )}
       <p className="text-sm text-stone-400 mb-8">
-        {new Date(story.created_at).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" })}
-        <span className="mx-2">·</span>{minRead} min read
+        {shownDate.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" })}
+        {story.audio_url && <><span className="mx-2">·</span>🎙️ Audio</>}
+        {(hasStory || hasTranscript) && <><span className="mx-2">·</span>{minRead} min read</>}
       </p>
 
       {story.introduction && <p className="text-stone-500 italic mb-6">{story.introduction}</p>}
 
-      <div className="space-y-5 text-stone-800 leading-[1.8] text-[1.075rem]">
-        {paragraphs.map((p, i) => (
-          <p key={i} className="whitespace-pre-wrap">{p}</p>
-        ))}
-      </div>
+      {/* Audio player for stories with a recording attached */}
+      {story.audio_url && (
+        <audio controls preload="metadata" src={story.audio_url} className="w-full mb-8">
+          Your browser doesn't support audio playback.
+        </audio>
+      )}
+
+      {/* When both a written story and a transcript exist, show them as two tabs */}
+      {both && (
+        <div className="mb-6 inline-flex gap-1 rounded-lg bg-stone-100 p-1">
+          <button
+            onClick={() => setTab("story")}
+            className={`rounded-md px-3 py-1.5 text-sm font-medium ${tab === "story" ? "bg-white text-stone-900 shadow-sm" : "text-stone-500 hover:text-stone-800"}`}
+          >Story</button>
+          <button
+            onClick={() => setTab("transcript")}
+            className={`rounded-md px-3 py-1.5 text-sm font-medium ${tab === "transcript" ? "bg-white text-stone-900 shadow-sm" : "text-stone-500 hover:text-stone-800"}`}
+          >Transcript</button>
+        </div>
+      )}
+
+      {hasStory || hasTranscript ? (
+        <div className="space-y-5 text-stone-800 leading-[1.8] text-[1.075rem]">
+          {both && tab === "transcript" && (
+            <p className="text-xs uppercase tracking-wide text-stone-400">Auto-transcribed from the audio</p>
+          )}
+          {paragraphs.map((p, i) => (
+            <p key={i} className="whitespace-pre-wrap">{p}</p>
+          ))}
+        </div>
+      ) : story.audio_url ? (
+        <p className="text-stone-400 italic">This story is audio only.</p>
+      ) : null}
 
       {/* Owner/admin controls */}
       {story.can_edit && (

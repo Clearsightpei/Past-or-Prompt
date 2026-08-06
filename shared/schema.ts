@@ -116,6 +116,10 @@ export const stories = pgTable("stories", {
   true_version: text("true_version").notNull(),
   fake_version: text("fake_version"), // legacy, nullable, read-only
   explanation: text("explanation"),   // optional
+  audio_url: text("audio_url"),       // R2 URL when audio is attached
+  transcript: text("transcript"),     // audio transcript (separate from the written story)
+  show_transcript: boolean("show_transcript").notNull().default(true), // display the transcript publicly?
+  display_date: text("display_date"), // ISO date the contributor wants shown (overrides created_at)
   // Moderation: 'pending' | 'approved' | 'rejected' | 'flagged'
   status: text("status").notNull().default("pending"),
   moderation_reason: text("moderation_reason"),
@@ -129,6 +133,7 @@ export const storyFakes = pgTable("story_fakes", {
   id: serial("id").primaryKey(),
   story_id: integer("story_id").notNull().references(() => stories.id, { onDelete: 'cascade' }),
   fake_version: text("fake_version").notNull(),
+  tell: text("tell"), // one obvious "this is AI" writing tell, shown on the reveal
   model: text("model"), // which model produced it
   status: text("status").notNull().default("pending"), // 'pending' | 'ready' | 'failed'
   created_at: timestamp("created_at").defaultNow().notNull(),

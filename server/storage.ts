@@ -8,7 +8,7 @@ import {
   FolderWithStoryCount, StoryWithFolderName, UserStats, StoryStats, PublicFolder
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, like, count, sql, and, desc, asc, inArray } from "drizzle-orm";
+import { eq, like, count, sql, and, desc, asc, inArray, isNotNull } from "drizzle-orm";
 
 // Internal folder-list row: includes raw password_hash + owner_user_id so the
 // route can compute per-caller access flags, then strip the secrets.
@@ -36,7 +36,7 @@ export interface IStorage {
   getStoryById(id: number): Promise<Story | undefined>;
   getStoriesByFolderId(folderId: number): Promise<Story[]>;
   createStory(story: InsertStory): Promise<Story>;
-  updateStory(id: number, story: InsertStory): Promise<Story | undefined>;
+  updateStory(id: number, story: Partial<typeof stories.$inferInsert>): Promise<Story | undefined>;
   deleteStory(id: number): Promise<boolean>;
 
   // Accounts
@@ -63,16 +63,18 @@ export interface IStorage {
   markResetTokenUsed(id: number): Promise<void>;
 
   // Treehole submissions & moderation
-  createSubmission(data: InsertSubmission, sessionId: string, status: string, reason?: string, authorUserId?: number): Promise<Story>;
+  createSubmission(data: InsertSubmission, sessionId: string, status: string, reason?: string, authorUserId?: number, extra?: { audio_url?: string | null; show_transcript?: boolean; transcript?: string | null }): Promise<Story>;
   getArchiveFeed(search?: string, sort?: "new" | "old", limit?: number, offset?: number): Promise<Story[]>;
   getApprovedStoriesByFolder(folderId: number): Promise<Story[]>;
   setStoryStatus(id: number, status: string, reason?: string): Promise<Story | undefined>;
   getModerationQueue(): Promise<Story[]>;
+  getAudioStories(): Promise<Story[]>;
 
   // Cached AI fakes
   getStoriesMissingFakes(): Promise<Story[]>;
   addFake(storyId: number, status: string, fakeVersion?: string, model?: string): Promise<StoryFake>;
-  setFakeStatus(id: number, status: string, fakeVersion?: string): Promise<void>;
+  setFakeStatus(id: number, status: string, fakeVersion?: string, tell?: string): Promise<void>;
+  setStoryExplanation(storyId: number, explanation: string): Promise<void>;
   getRandomReadyFake(storyId: number): Promise<StoryFake | undefined>;
   getFakesForStory(storyId: number): Promise<StoryFake[]>;
 
@@ -242,7 +244,7 @@ export class DatabaseStorage implements IStorage {
     return result;
   }
 
-  async updateStory(id: number, story: InsertStory): Promise<Story | undefined> {
+  async updateStory(id: number, story: Partial<typeof stories.$inferInsert>): Promise<Story | undefined> {
     const [result] = await db
       .update(stories)
       .set(story)
@@ -512,6 +514,7 @@ export class DatabaseStorage implements IStorage {
     status: string,
     reason?: string,
     authorUserId?: number,
+    extra?: { audio_url?: string | null; show_transcript?: boolean; transcript?: string | null },
   ): Promise<Story> {
     const [result] = await db
       .insert(stories)
@@ -523,6 +526,9 @@ export class DatabaseStorage implements IStorage {
         moderation_reason: reason ?? null,
         author_session_id: sessionId,
         author_user_id: authorUserId ?? null,
+        audio_url: extra?.audio_url ?? null,
+        transcript: extra?.transcript ?? null,
+        show_transcript: extra?.show_transcript ?? true,
       })
       .returning();
 
@@ -546,7 +552,9 @@ export class DatabaseStorage implements IStorage {
 
   // Archive home feed = all public stories, with sort + pagination.
   async getArchiveFeed(search?: string, sort: "new" | "old" = "new", limit = 20, offset = 0): Promise<Story[]> {
-    const order = sort === "old" ? asc(stories.created_at) : desc(stories.created_at);
+    // Order by the contributor's chosen date when set, else the upload date.
+    const effectiveDate = sql`COALESCE(${stories.display_date}::timestamp, ${stories.created_at})`;
+    const order = sort === "old" ? sql`${effectiveDate} ASC` : sql`${effectiveDate} DESC`;
     const rows = await db
       .select()
       .from(stories)
@@ -596,6 +604,17 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(stories.created_at));
   }
 
+  // All audio stories (any status), newest first — for the admin to spot-check
+  // and remove after they go public. Capped for a lightweight review view.
+  async getAudioStories(): Promise<Story[]> {
+    return db
+      .select()
+      .from(stories)
+      .where(isNotNull(stories.audio_url))
+      .orderBy(desc(stories.created_at))
+      .limit(100);
+  }
+
   // ---- Cached AI fakes ----
 
   async addFake(storyId: number, status: string, fakeVersion?: string, model?: string): Promise<StoryFake> {
@@ -612,11 +631,19 @@ export class DatabaseStorage implements IStorage {
     return result;
   }
 
-  async setFakeStatus(id: number, status: string, fakeVersion?: string): Promise<void> {
+  async setFakeStatus(id: number, status: string, fakeVersion?: string, tell?: string): Promise<void> {
     await db
       .update(storyFakes)
-      .set({ status, ...(fakeVersion !== undefined ? { fake_version: fakeVersion } : {}) })
+      .set({
+        status,
+        ...(fakeVersion !== undefined ? { fake_version: fakeVersion } : {}),
+        ...(tell !== undefined ? { tell } : {}),
+      })
       .where(eq(storyFakes.id, id));
+  }
+
+  async setStoryExplanation(storyId: number, explanation: string): Promise<void> {
+    await db.update(stories).set({ explanation }).where(eq(stories.id, storyId));
   }
 
   // Approved stories that have no usable (ready) AI fake yet — used to retry

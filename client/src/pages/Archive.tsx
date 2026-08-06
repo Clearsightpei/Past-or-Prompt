@@ -85,10 +85,16 @@ export default function Archive() {
             {stories.map((story) => (
               <Link key={story.id} href={`/story/${story.id}`} className="block rounded-lg border border-stone-200 bg-white p-6 hover:border-stone-400 hover:shadow-sm transition-all">
                 {story.event && <h2 className="font-serif text-xl font-semibold text-stone-900 mb-2">{story.event}</h2>}
-                <p className="text-stone-600 leading-relaxed line-clamp-3">{story.true_version}</p>
+                <p className="text-stone-600 leading-relaxed line-clamp-3">
+                  {story.true_version.trim()
+                    ? story.true_version
+                    : (story as any).transcript?.trim()
+                    ? (story as any).transcript
+                    : (story as any).audio_url ? "🎙️ Audio story" : ""}
+                </p>
                 <div className="mt-3 flex items-center gap-3 text-xs text-stone-400">
                   <CollectionTag collectionId={story.folder_id} collections={collections} />
-                  <span>{new Date(story.created_at).toLocaleDateString()}</span>
+                  <span>{new Date((story as any).display_date ? (story as any).display_date + "T00:00:00" : story.created_at).toLocaleDateString()}</span>
                 </div>
               </Link>
             ))}

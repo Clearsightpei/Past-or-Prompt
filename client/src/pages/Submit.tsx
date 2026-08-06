@@ -10,10 +10,12 @@ import { useToast } from "@/hooks/use-toast";
 import { useSession } from "@/context/SessionContext";
 import { useAuth } from "@/hooks/useAuth";
 import { useFolders } from "@/hooks/useFolders";
-import { ArrowLeft, CheckCircle2 } from "lucide-react";
+import { ArrowLeft, CheckCircle2, PenLine, Mic } from "lucide-react";
+
+const MAX_AUDIO_MB = 25;
 
 // True-story-only submission. Fakes + moderation happen server-side, so the
-// contributor only ever writes the real story.
+// contributor only ever provides the real story — typed or spoken.
 export default function Submit() {
   const [, navigate] = useLocation();
   const { toast } = useToast();
@@ -21,10 +23,23 @@ export default function Submit() {
   const { user } = useAuth();
   const { data: collections } = useFolders();
 
+  const [mode, setMode] = useState<"text" | "audio">("text");
   const [event, setEvent] = useState("");
   const [trueVersion, setTrueVersion] = useState("");
   const [collectionId, setCollectionId] = useState("");
+  const [audioFile, setAudioFile] = useState<File | null>(null);
+  const [showTranscript, setShowTranscript] = useState(true);
   const [done, setDone] = useState<null | "approved" | "pending" | "rejected">(null);
+
+  const onSuccess = (data: { status: string }) => {
+    queryClient.invalidateQueries({ queryKey: ["/api/stories"] });
+    if (data.status === "draft") {
+      toast({ title: "Saved as draft", description: "Find it under My Stories." });
+      navigate("/my");
+    } else {
+      setDone((data.status as any) || "pending");
+    }
+  };
 
   const submitMutation = useMutation({
     mutationFn: async (draft: boolean) => {
@@ -37,28 +52,62 @@ export default function Submit() {
       });
       return response.json() as Promise<{ id: number; status: string }>;
     },
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['/api/stories'] });
-      if (data.status === "draft") {
-        toast({ title: "Saved as draft", description: "Find it under My Stories." });
-        navigate("/my");
-      } else {
-        setDone((data.status as any) || "pending");
+    onSuccess,
+    onError: () => toast({ title: "Error", description: "Couldn't submit your story.", variant: "destructive" }),
+  });
+
+  const audioMutation = useMutation({
+    mutationFn: async () => {
+      const form = new FormData();
+      form.append("audio", audioFile!);
+      if (event.trim()) form.append("event", event.trim());
+      if (collectionId) form.append("folder_id", collectionId);
+      form.append("show_transcript", showTranscript ? "true" : "false");
+      form.append("sessionId", sessionId);
+      const res = await fetch("/api/submissions/audio", {
+        method: "POST",
+        body: form,
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.message || "Upload failed");
       }
+      return res.json() as Promise<{ id: number; status: string }>;
     },
-    onError: () => {
-      toast({ title: "Error", description: "Couldn't submit your story.", variant: "destructive" });
-    },
+    onSuccess,
+    onError: (e: any) =>
+      toast({ title: "Couldn't submit audio", description: e?.message || "Please try again.", variant: "destructive" }),
   });
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (trueVersion.trim().length === 0) {
-      toast({ title: "Story required", description: "Please write your story first.", variant: "destructive" });
+    if (mode === "text") {
+      if (trueVersion.trim().length === 0) {
+        toast({ title: "Story required", description: "Please write your story first.", variant: "destructive" });
+        return;
+      }
+      submitMutation.mutate(false);
+    } else {
+      if (!audioFile) {
+        toast({ title: "Audio required", description: "Please choose an audio file.", variant: "destructive" });
+        return;
+      }
+      audioMutation.mutate();
+    }
+  };
+
+  const onPickAudio = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0] ?? null;
+    if (f && f.size > MAX_AUDIO_MB * 1024 * 1024) {
+      toast({ title: "File too large", description: `Please keep audio under ${MAX_AUDIO_MB} MB.`, variant: "destructive" });
+      e.target.value = "";
       return;
     }
-    submitMutation.mutate(false);
+    setAudioFile(f);
   };
+
+  const busy = submitMutation.isPending || audioMutation.isPending;
 
   if (done) {
     const message =
@@ -77,7 +126,7 @@ export default function Submit() {
             Back to the archive
           </Link>
           <button
-            onClick={() => { setDone(null); setEvent(""); setTrueVersion(""); }}
+            onClick={() => { setDone(null); setEvent(""); setTrueVersion(""); setAudioFile(null); }}
             className="rounded-full border border-stone-300 px-5 py-2.5 text-sm font-medium text-stone-700 hover:bg-stone-100"
           >
             Share another
@@ -87,6 +136,11 @@ export default function Submit() {
     );
   }
 
+  const tabClass = (active: boolean) =>
+    `flex-1 inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+      active ? "bg-white text-stone-900 shadow-sm" : "text-stone-500 hover:text-stone-800"
+    }`;
+
   return (
     <div className="max-w-xl mx-auto">
       <Link href="/" className="inline-flex items-center gap-2 text-sm text-stone-500 hover:text-stone-800 mb-8">
@@ -95,10 +149,20 @@ export default function Submit() {
       </Link>
 
       <h1 className="font-serif text-3xl font-bold text-stone-900 mb-2">Share your story</h1>
-      <p className="text-stone-600 mb-8">
-        Write a true story you'd like to add to the archive. Submissions are anonymous and
-        reviewed before they appear. You only write the real story — no need to invent anything.
+      <p className="text-stone-600 mb-6">
+        Add a true story to the archive — write it, or record it and upload the audio. Submissions
+        are anonymous. You only share the real story; no need to invent anything.
       </p>
+
+      {/* Mode switch */}
+      <div className="mb-6 flex gap-1 rounded-lg bg-stone-100 p-1">
+        <button type="button" className={tabClass(mode === "text")} onClick={() => setMode("text")}>
+          <PenLine className="h-4 w-4" /> Write it
+        </button>
+        <button type="button" className={tabClass(mode === "audio")} onClick={() => setMode("audio")}>
+          <Mic className="h-4 w-4" /> Upload audio
+        </button>
+      </div>
 
       <form onSubmit={handleSubmit} className="space-y-6">
         <div>
@@ -113,21 +177,58 @@ export default function Submit() {
           />
         </div>
 
-        <div>
-          <Label htmlFor="true_version" className="text-stone-700">Your story</Label>
-          <Textarea
-            id="true_version"
-            value={trueVersion}
-            onChange={(e) => setTrueVersion(e.target.value)}
-            maxLength={20000}
-            rows={14}
-            placeholder="Tell it as it happened..."
-            className="mt-1.5 bg-white leading-relaxed"
-          />
-          <p className="mt-1 text-xs text-stone-400">
-            {trueVersion.trim() ? trueVersion.trim().split(/\s+/).length : 0} words (up to ~3000)
-          </p>
-        </div>
+        {mode === "text" ? (
+          <div>
+            <Label htmlFor="true_version" className="text-stone-700">Your story</Label>
+            <Textarea
+              id="true_version"
+              value={trueVersion}
+              onChange={(e) => setTrueVersion(e.target.value)}
+              maxLength={20000}
+              rows={14}
+              placeholder="Tell it as it happened..."
+              className="mt-1.5 bg-white leading-relaxed"
+            />
+            <p className="mt-1 text-xs text-stone-400">
+              {trueVersion.trim() ? trueVersion.trim().split(/\s+/).length : 0} words (up to ~3000)
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div>
+              <Label htmlFor="audio" className="text-stone-700">Audio file</Label>
+              <input
+                id="audio"
+                type="file"
+                accept="audio/*"
+                onChange={onPickAudio}
+                className="mt-1.5 block w-full text-sm text-stone-600 file:mr-3 file:rounded-md file:border-0 file:bg-stone-900 file:px-4 file:py-2 file:text-sm file:font-medium file:text-white hover:file:bg-stone-700"
+              />
+              <p className="mt-1 text-xs text-stone-400">
+                MP3, M4A, WAV, OGG, or WebM · up to {MAX_AUDIO_MB} MB. We'll transcribe it automatically.
+              </p>
+              {audioFile && (
+                <p className="mt-2 text-sm text-stone-600">Selected: {audioFile.name}</p>
+              )}
+            </div>
+
+            <label className="flex items-start gap-2 text-sm cursor-pointer">
+              <input
+                type="checkbox"
+                className="mt-1"
+                checked={showTranscript}
+                onChange={(e) => setShowTranscript(e.target.checked)}
+              />
+              <span>
+                <span className="font-medium text-stone-800">Show the transcript as the story text.</span>
+                <span className="block text-stone-500">
+                  On: readers see the written transcript alongside the audio. Off: only the audio
+                  player is shown (the transcript is still used privately to screen for abuse).
+                </span>
+              </span>
+            </label>
+          </div>
+        )}
 
         <div>
           <Label htmlFor="collection" className="text-stone-700">Collection <span className="text-stone-400">(optional)</span></Label>
@@ -148,14 +249,16 @@ export default function Submit() {
           <Link href="/" className="inline-flex items-center rounded-md border border-stone-300 px-4 py-2 text-sm font-medium text-stone-700 hover:bg-stone-100">
             Cancel
           </Link>
-          {user && (
-            <Button type="button" variant="outline" disabled={submitMutation.isPending}
+          {user && mode === "text" && (
+            <Button type="button" variant="outline" disabled={busy}
               onClick={() => { if (trueVersion.trim()) submitMutation.mutate(true); }}>
               Save as draft
             </Button>
           )}
-          <Button type="submit" disabled={submitMutation.isPending}>
-            {submitMutation.isPending ? "Submitting..." : "Submit story"}
+          <Button type="submit" disabled={busy}>
+            {busy
+              ? mode === "audio" ? "Uploading & transcribing..." : "Submitting..."
+              : mode === "audio" ? "Upload audio story" : "Submit story"}
           </Button>
         </div>
       </form>

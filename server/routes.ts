@@ -24,6 +24,16 @@ import { submitLimiter, attemptLimiter, sensitiveLimiter } from "./middleware/ra
 import { requireAdmin, requireUser, adminLogin, adminLogout } from "./middleware/adminAuth";
 import { moderateText, enqueueFakeGeneration, generateFake } from "./ollama";
 import { sendPasswordResetEmail } from "./mailer";
+import multer from "multer";
+import { uploadAudio, r2Configured } from "./r2";
+import { transcribeAudio, transcribeConfigured } from "./transcribe";
+
+// Audio uploads are held in memory, streamed to R2, then discarded. 25 MB cap
+// matches Groq's free-tier transcription limit.
+const audioUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 },
+});
 
 // Run AI moderation over submitted text → a story status. Fails CLOSED to
 // "pending" (human review) if the model is unavailable. Shared by submit/publish.
@@ -69,6 +79,18 @@ async function remoderateStory(storyId: number): Promise<void> {
     // AI is confident it's fine — keep it live and clear the reports.
     await storage.resolveReportsForStory(storyId, "reviewed");
   }
+}
+
+// A story whose contributor kept its audio transcript hidden must not leak the
+// transcript to anyone but someone who can edit it (owner/admin). We blank the
+// transcript field for everyone else; the written story is unaffected.
+function redactHiddenTranscript<
+  T extends { transcript?: string | null; show_transcript?: boolean; audio_url?: string | null },
+>(story: T, canEdit: boolean): T {
+  if (story.audio_url && story.show_transcript === false && !canEdit) {
+    return { ...story, transcript: null };
+  }
+  return story;
 }
 
 type FolderPerm = { id: number; password_hash: string | null; owner_user_id?: number | null };
@@ -526,7 +548,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const limit = Math.min(parseInt(req.query.limit as string) || 20, 50);
         const offset = parseInt(req.query.offset as string) || 0;
         const feed = await storage.getArchiveFeed(search, sort, limit, offset);
-        return res.json(feed);
+        return res.json(feed.map((s) => redactHiddenTranscript(s, false)));
       }
 
       const folderId = parseInt(req.query.folder as string);
@@ -541,7 +563,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const list = await storage.getApprovedStoriesByFolder(folderId);
       // Per-story can_edit so the collection page shows controls on exactly the
       // stories this caller may edit/move (covers the author override).
-      res.json(list.map((s) => ({ ...s, can_edit: canEditStory(req, s, folder) })));
+      res.json(list.map((s) => {
+        const can_edit = canEditStory(req, s, folder);
+        return { ...redactHiddenTranscript(s, can_edit), can_edit };
+      }));
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch stories" });
     }
@@ -559,7 +584,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!folder) return res.status(404).json({ message: "Collection not found" });
 
       const list = await storage.getApprovedStoriesByFolder(folderId);
-      res.json(list);
+      // Hidden-transcript audio stories aren't given AI fakes, so they never
+      // enter gameplay; blank their text here too as a belt-and-suspenders guard.
+      res.json(list.map((s) => redactHiddenTranscript(s, false)));
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch game stories" });
     }
@@ -590,7 +617,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(403).json({ message: "This story is in a locked collection." });
       }
 
-      res.json({ ...story, can_edit: canEdit });
+      res.json({ ...redactHiddenTranscript(story, canEdit), can_edit: canEdit });
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch story" });
     }
@@ -607,7 +634,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!fake) {
         return res.status(404).json({ message: "No fake available yet for this story" });
       }
-      res.json({ fake_version: fake.fake_version });
+      res.json({ fake_version: fake.fake_version, tell: fake.tell ?? null });
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch fake" });
     }
@@ -662,6 +689,142 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // POST /api/submissions/audio - Audio story: upload → R2 → Whisper transcript
+  // → moderate transcript → publish (public-first). multipart/form-data.
+  app.post("/api/submissions/audio", submitLimiter, audioUpload.single("audio"), async (req, res) => {
+    try {
+      if (!r2Configured) {
+        return res.status(503).json({ message: "Audio uploads aren't configured on the server yet." });
+      }
+      const file = req.file;
+      if (!file) return res.status(400).json({ message: "No audio file received." });
+      if (!file.mimetype.startsWith("audio/")) {
+        return res.status(400).json({ message: "Please upload an audio file." });
+      }
+
+      const event = stripHtmlNullable(typeof req.body?.event === "string" ? req.body.event : null);
+      const folder_id = req.body?.folder_id ? Number(req.body.folder_id) : undefined;
+      const show_transcript = req.body?.show_transcript !== "false"; // default: show it
+      const sessionId =
+        (typeof req.body?.sessionId === "string" && req.body.sessionId) || req.sessionID;
+
+      // 1) Store the audio file in R2.
+      const audio_url = await uploadAudio(file.buffer, file.mimetype);
+
+      // 2) Transcribe (Groq Whisper). If it fails we can't moderate the audio,
+      //    so fail closed to human review rather than publishing it blind.
+      let transcript = "";
+      let transcriptFailed = false;
+      if (transcribeConfigured) {
+        try {
+          transcript = stripHtml(
+            await transcribeAudio(file.buffer, file.mimetype, file.originalname || "audio"),
+          );
+        } catch (err) {
+          transcriptFailed = true;
+          console.error("[transcribe] failed:", err instanceof Error ? err.message : err);
+        }
+      } else {
+        transcriptFailed = true;
+      }
+
+      // 3) Moderate the transcript (spam / harmful only). No transcript → pending.
+      let status = "pending";
+      let reason: string | undefined = transcriptFailed
+        ? "Audio couldn't be transcribed; queued for human review."
+        : undefined;
+      if (!transcriptFailed && transcript.length > 0) {
+        const result = await moderateContent([event, transcript].filter(Boolean).join("\n\n"));
+        status = result.status;
+        reason = result.reason || undefined;
+      }
+
+      // Audio submission has no written story; true_version stays blank ("") and
+      // the transcript lives in its own field.
+      const story = await storage.createSubmission(
+        { true_version: "", event, folder_id },
+        sessionId,
+        status,
+        reason,
+        req.session?.userId,
+        { audio_url, show_transcript, transcript: transcript.length > 0 ? transcript : null },
+      );
+
+      // Make a game fake only when there's shown text to base it on (runJob also
+      // guards this) — never surface a transcript the contributor chose to hide.
+      if (status === "approved" && show_transcript && transcript.length > 0) {
+        enqueueFakeGeneration(story.id, 1);
+      }
+
+      res.status(201).json({ id: story.id, status });
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      console.error("[ERROR] Failed to create audio submission:", error);
+      res.status(500).json({ message: "Failed to submit audio", error: errMsg });
+    }
+  });
+
+  // POST /api/stories/:id/audio - attach audio to an EXISTING story (owner/admin/
+  // unlocked). Transcribes + moderates; harmful audio is refused, not attached.
+  app.post("/api/stories/:id/audio", submitLimiter, audioUpload.single("audio"), async (req, res) => {
+    try {
+      if (!r2Configured) {
+        return res.status(503).json({ message: "Audio uploads aren't configured on the server yet." });
+      }
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ message: "Invalid story ID" });
+
+      const existing = await storage.getStoryById(id);
+      if (!existing) return res.status(404).json({ message: "Story not found" });
+      const folder = await storage.getFolderById(existing.folder_id);
+      if (!folder || !canEditStory(req, existing, folder)) {
+        return res.status(403).json({ message: "You don't have access to edit this story." });
+      }
+
+      const file = req.file;
+      if (!file) return res.status(400).json({ message: "No audio file received." });
+      if (!file.mimetype.startsWith("audio/")) {
+        return res.status(400).json({ message: "Please upload an audio file." });
+      }
+      const show_transcript = req.body?.show_transcript !== "false";
+
+      const audio_url = await uploadAudio(file.buffer, file.mimetype);
+
+      let transcript = "";
+      if (transcribeConfigured) {
+        try {
+          transcript = stripHtml(
+            await transcribeAudio(file.buffer, file.mimetype, file.originalname || "audio"),
+          );
+        } catch (err) {
+          console.error("[transcribe] failed:", err instanceof Error ? err.message : err);
+        }
+      }
+
+      // Refuse audio whose transcript is clearly harmful; don't attach it.
+      if (transcript.length > 0) {
+        const { status } = await moderateContent(
+          [existing.event, transcript].filter(Boolean).join("\n\n"),
+        );
+        if (status === "rejected") {
+          return res.status(400).json({ message: "This audio didn't pass moderation, so it wasn't attached." });
+        }
+      }
+
+      await storage.updateStory(id, {
+        audio_url,
+        transcript: transcript.length > 0 ? transcript : null,
+        show_transcript,
+      });
+
+      res.json({ id, transcript_saved: transcript.length > 0 });
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      console.error("[ERROR] Failed to attach audio:", error);
+      res.status(500).json({ message: "Failed to attach audio", error: errMsg });
+    }
+  });
+
   // POST /api/stories/:id/report - Report a live story
   app.post("/api/stories/:id/report", submitLimiter, async (req, res) => {
     try {
@@ -713,11 +876,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(403).json({ message: "You don't have access to edit this story." });
       }
 
-      const validatedData = insertStorySchema.parse({
-        ...req.body,
-        folder_id: existing.folder_id,
-      });
-      const story = await storage.updateStory(id, validatedData);
+      // Build a whitelisted update — the written story, title, the shown date,
+      // and the transcript / its visibility. Sanitize free text.
+      const update: Record<string, any> = {};
+      if (typeof req.body?.true_version === "string") update.true_version = stripHtml(req.body.true_version);
+      if (typeof req.body?.event !== "undefined") update.event = stripHtmlNullable(req.body.event);
+      if (typeof req.body?.transcript !== "undefined") {
+        update.transcript = req.body.transcript ? stripHtml(req.body.transcript) : null;
+      }
+      if (typeof req.body?.show_transcript === "boolean") update.show_transcript = req.body.show_transcript;
+      if (typeof req.body?.display_date !== "undefined") {
+        // Accept an ISO date (YYYY-MM-DD) or clear it.
+        const d = typeof req.body.display_date === "string" ? req.body.display_date.trim() : "";
+        update.display_date = /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : null;
+      }
+
+      const story = await storage.updateStory(id, update);
       res.json(story);
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -893,6 +1067,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json(queue);
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch moderation queue" });
+    }
+  });
+
+  // GET /api/admin/audio - all audio stories (any status) for spot-checking.
+  app.get("/api/admin/audio", requireAdmin, async (_req, res) => {
+    try {
+      res.json(await storage.getAudioStories());
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch audio stories" });
     }
   });
 

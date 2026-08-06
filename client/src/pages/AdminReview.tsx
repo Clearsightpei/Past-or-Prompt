@@ -60,14 +60,37 @@ export default function AdminReview() {
     enabled: !!isAdmin,
   });
 
+  const { data: audio = [], refetch: refetchAudio } = useQuery({
+    queryKey: ['/api/admin/audio'],
+    queryFn: async () => {
+      const res = await fetch('/api/admin/audio', { credentials: 'include' });
+      if (!res.ok) throw new Error('unauthorized');
+      return res.json() as Promise<Story[]>;
+    },
+    enabled: !!isAdmin,
+  });
+
   const act = async (path: string, body?: any) => {
     try {
       await apiRequest("POST", path, body ?? {});
       refetchQueue();
       refetchReports();
+      refetchAudio();
       queryClient.invalidateQueries({ queryKey: ['/api/stories'] });
     } catch {
       toast({ title: "Action failed", variant: "destructive" });
+    }
+  };
+
+  const del = async (id: number) => {
+    try {
+      await apiRequest("DELETE", `/api/stories/${id}`);
+      refetchAudio();
+      refetchQueue();
+      queryClient.invalidateQueries({ queryKey: ['/api/stories'] });
+      toast({ title: "Story deleted" });
+    } catch {
+      toast({ title: "Couldn't delete", variant: "destructive" });
     }
   };
 
@@ -172,6 +195,42 @@ export default function AdminReview() {
                       <option key={c.id} value={c.id}>{c.name}</option>
                     ))}
                   </select>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* Audio stories — public-first; review here and remove any bad ones */}
+      <section className="mb-12">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-stone-400 mb-4">
+          Audio stories ({audio.length})
+        </h2>
+        {audio.length === 0 ? (
+          <p className="text-stone-500 text-sm">No audio stories yet.</p>
+        ) : (
+          <div className="space-y-4">
+            {audio.map((story) => (
+              <div key={story.id} className="rounded-lg border border-stone-200 bg-white p-5">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-xs rounded-full bg-stone-100 px-2 py-0.5 text-stone-600">{story.status}</span>
+                  {story.event && <span className="font-serif font-semibold text-stone-900">{story.event}</span>}
+                  {!story.show_transcript && <span className="text-xs text-stone-400">(transcript hidden from public)</span>}
+                </div>
+                {story.audio_url && (
+                  <audio controls preload="none" src={story.audio_url} className="w-full mb-2" />
+                )}
+                <p className="text-stone-500 text-sm whitespace-pre-wrap line-clamp-4">{story.true_version}</p>
+                <div className="mt-3 flex gap-2">
+                  {story.status !== "approved" && (
+                    <Button size="sm" onClick={() => act(`/api/admin/stories/${story.id}/approve`)}>
+                      <Check className="h-4 w-4 mr-1" /> Approve
+                    </Button>
+                  )}
+                  <Button size="sm" variant="outline" className="text-red-600 hover:text-red-700" onClick={() => del(story.id)}>
+                    <X className="h-4 w-4 mr-1" /> Delete
+                  </Button>
                 </div>
               </div>
             ))}

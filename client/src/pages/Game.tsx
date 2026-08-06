@@ -119,8 +119,8 @@ export default function Game() {
     queryKey: ['/api/stories/fake', currentStory?.id],
     queryFn: async () => {
       const response = await fetch(`/api/stories/${currentStory!.id}/fake`);
-      if (!response.ok) return { fake_version: null };
-      return response.json() as Promise<{ fake_version: string | null }>;
+      if (!response.ok) return { fake_version: null, tell: null };
+      return response.json() as Promise<{ fake_version: string | null; tell: string | null }>;
     },
     enabled: !!currentStory,
   });
@@ -314,6 +314,7 @@ export default function Game() {
               <FeedbackMessage
                 isCorrect={isCorrect}
                 explanation={currentStory.explanation ?? ""}
+                aiTell={fakeData?.tell ?? ""}
               />
             )}
           </>
